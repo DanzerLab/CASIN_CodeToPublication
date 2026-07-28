@@ -1,0 +1,133 @@
+# preparing openTarget db ----
+openTarget_db <- read_parquet("./OTP/disease.parquet")
+mh_data <- read.csv2("./OTP/mouse_human_genes.csv", sep = ",")
+asso_dir <- "./OTP/association_overall_direct/"
+
+# 2. Grab all the part-*.snappy.parquet files
+files <- list.files(
+  path       = asso_dir,
+  pattern    = "^part-.*\\.snappy\\.parquet$",
+  full.names = TRUE
+)
+
+# 3. Read each one and row-bind into a single tibble
+openTargetAsso_db <- files %>%
+  map_dfr(read_parquet)
+
+openTargetAsso_db <- openTargetAsso_db %>%
+  left_join(
+    openTarget_db %>% dplyr::select(id, name),
+    by = c("diseaseId" = "id")
+  ) 
+gene_map <- mapIds(
+  x          = org.Hs.eg.db,
+  keys       = openTargetAsso_db$targetId,
+  column     = "SYMBOL",
+  keytype    = "ENSEMBL",
+  multiVals  = "first"
+)
+
+# add it as a column
+openTargetAsso_db$geneSymbol <- gene_map
+
+## after making the mh_data in convert_mouseHumangenes.R
+openTargetAsso_db <- openTargetAsso_db %>%
+  # join on human symbol → geneSymbol
+  left_join(
+    mh_data %>% dplyr::select(human, mouse),
+    by = c("geneSymbol" = "human")
+  ) 
+
+
+pdCasinSign <- c("Serf2","C1qtnf4","Tma7","Pebp1","Esr1","Ar","Ap2m1","Ubc","Jun","Psap","Cst3",
+                 "Ndufc1","Polr2j","Nefl","Hspe1","Actg1","Ubb","Atp6v0c","Timm10b","Tuba1b",
+                 "Cdc42")
+intDisease <- c("Parkinson disease","synucleinopathy", "Lewy body dementia", "neurodegenerative disease")
+allgenes <- # all genes tested in DEG analysis
+
+openTargetAsso_db <- openTargetAsso_db_overall 
+
+allgenes <- intersect(setdiff(allgenes,pdCasinSign), openTargetAsso_db$mouse)
+
+nPerm <- c(1:10000)
+disease_cols <- make.names(intDisease)
+score_cols        <- paste0(disease_cols)
+all_cols <- c("seed", "geneSet", score_cols)
+randomResults_df <- data.frame(
+  matrix(ncol = length(all_cols), nrow = 0),
+  stringsAsFactors = FALSE
+)
+colnames(randomResults_df) <- all_cols
+
+for(i in nPerm){
+  #print(i)
+  set.seed(i)
+  randomGene <- sample(allgenes, length(pdCasinSign))
+  
+  df <- subset(
+    openTargetAsso_db,
+    mouse %in% randomGene &
+      name  %in% intDisease
+  )
+  
+  # named vector of mean scores per disease (NA if missing)
+  avg_by_disease <- tapply(df$score, df$name, mean, na.rm = TRUE)
+  
+  # build a one-row list
+  new_row <- vector("list", length = ncol(randomResults_df))
+  names(new_row) <- colnames(randomResults_df)
+  new_row$seed    <- i
+  new_row$geneSet <- paste(randomGene, collapse = ",")
+  
+  # fill in each disease column
+  for(j in seq_along(intDisease)){
+    col <- disease_cols[j]
+    new_row[[col]] <- avg_by_disease[intDisease[j]]
+  }
+  
+  # replace any NA in new_row with 0
+  for(nm in names(new_row)){
+    if(is.na(new_row[[nm]])) new_row[[nm]] <- 0
+  }
+  
+  # rbind into the results
+  randomResults_df <- rbind(
+    randomResults_df,
+    as.data.frame(new_row, stringsAsFactors = FALSE)
+  )
+}
+
+openTarget_pdSign_intDisease_lit <- openTargetAsso_db[which(openTargetAsso_db$mouse %in% pdCasinSign & openTargetAsso_db$name %in% intDisease),]
+
+avg_scores <- randomResults_df %>%
+  select(all_of(disease_cols)) %>%
+  summarise(across(everything(), mean, na.rm = TRUE)) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to  = "name",
+    values_to = "score"
+  )
+
+# 2. Turn into a “fake” evidence table matching your existing columns
+avg_row_df <- avg_scores %>%
+  mutate(
+    datatypeId    = NA_character_,
+    datasourceId  = NA_character_,
+    diseaseId     = paste0("avg_of_", name),
+    targetId      = NA_character_,
+    evidenceCount = NA_integer_,
+    geneSymbol    = "Random Signature",
+    mouse         = "Random Signature"
+  ) %>%
+  select(
+    datatypeId, datasourceId, diseaseId,
+    targetId,     score,        evidenceCount,
+    name,         geneSymbol,   mouse
+  )
+
+# 3. Bind with the real data
+pdCasinResults_combined <- bind_rows(
+  openTarget_pdSign_intDisease_lit,
+  avg_row_df
+)
+pdCasinResults_combined$name <- gsub(" ",".",pdCasinResults_combined$name) 

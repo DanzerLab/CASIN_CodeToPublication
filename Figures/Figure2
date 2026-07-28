@@ -1,3 +1,4 @@
+# Figure 2 A, B ----
 dds <- deseq object including every sample, pseudobulked
 
 dds_sub <- dds[,colData(dds)$lucitrt %in% c("synOFF24M_NoCasin","synON24M_NoCasin",
@@ -167,3 +168,59 @@ ggplot(combined, aes(x = Fold,
     axis.text.y = element_text(size = 10),
     legend.position = "top"
   )
+
+# Figure 2 C, D ----
+combined <- Additional Data 6
+
+combined$Group <- factor(combined$Group, levels = c("NoCasin", "Casin"))
+order_levels <- no_casin_df %>% 
+  # in case you have multiple entries per source, you could summarise:
+  group_by(source) %>% 
+  summarise(score = mean(score)) %>% 
+  arrange(desc(score)) %>% 
+  pull(source)
+combined <- combined %>%
+  mutate(source = factor(source, levels = order_levels))
+
+ggplot(combined, aes(x = source,
+                     y = score,
+                     fill = Group)) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  scale_fill_manual(name = "Condition", values = c("Casin" = "cadetblue", "NoCasin" = "red3"))+
+  labs(x    = "Source",
+       y    = "Score",
+       fill = "Condition") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+## pathway
+result_casin <- result from decoupleR for 24M ON CASIN vs 24M ON NoCASIN
+result_nocasin <- result from decoupleR for 24M ON NoCASIN vs 24M OFF NoCASIN
+
+result_casin$Group <- "Casin"
+result_nocasin$Group <- "NoCasin"
+
+combined_path <- bind_rows(result_casin, result_nocasin)
+combined_path$Group <- factor(combined_path$Group, levels = c("NoCasin", "Casin"))
+order_levels_path <- result_nocasin %>% 
+  # in case you have multiple entries per source, you could summarise:
+  group_by(source) %>% 
+  summarise(score = mean(score)) %>% 
+  arrange(desc(score)) %>% 
+  pull(source)
+combined_path <- combined_path %>%
+  mutate(source = factor(source, levels = order_levels_path))
+
+ggplot(combined_path, aes(x = source,
+                          y = score,
+                          fill = Group)) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  scale_fill_manual(name = "Condition", values = c("Casin" = "cadetblue", "NoCasin" = "red3"))+
+  labs(x    = "Source",
+       y    = "Score",
+       fill = "Condition") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+

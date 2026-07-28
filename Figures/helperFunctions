@@ -1,0 +1,183 @@
+#functions and coloring ----
+clusterEnrichedPathfindR <- function(enrichRes,
+                                     kRange     = 2:10,
+                                     method     = "average",
+                                     plotK      = TRUE) {
+  # deps
+  require(cluster)   # for silhouette()
+  require(dplyr)     # for mutate/group_by
+  
+  # 1) build list of gene sets per term (combine Up and Down regs)
+  geneSets <- lapply(seq_len(nrow(enrichRes)), function(i) {
+    genes_up   <- strsplit(enrichRes$Up_regulated[i],    "[, ]+")[[1]]
+    genes_down <- strsplit(enrichRes$Down_regulated[i],  "[, ]+")[[1]]
+    unique(c(genes_up, genes_down))
+  })
+  names(geneSets) <- enrichRes$ID
+  
+  # 2) Jaccard similarity matrix
+  terms <- names(geneSets)
+  n     <- length(terms)
+  simMat <- matrix(NA, nrow = n, ncol = n,
+                   dimnames = list(terms, terms))
+  jaccard <- function(a, b) {
+    length(intersect(a,b)) / length(union(a,b))
+  }
+  for (i in seq_len(n)) {
+    for (j in seq_len(n)) {
+      simMat[i,j] <- jaccard(geneSets[[i]], geneSets[[j]])
+    }
+  }
+  
+  # 3) hierarchical clustering on distance = 1 - sim
+  distMat <- as.dist(1 - simMat)
+  hc      <- hclust(distMat, method = method)
+  
+  # 4) pick best k by silhouette
+  avgSil <- function(k) {
+    
+    tryCatch({
+      cl <- cutree(hc, k = k)
+      sil <- silhouette(cl, distMat)
+      mean(sil[, "sil_width"])
+    }, error = function(e) {
+      warning(sprintf("k = %d failed: %s", k, e$message))
+      NA_real_
+    })
+  }
+  silVals <- sapply(kRange, avgSil)
+  bestK   <- kRange[which.max(silVals)]
+  
+  if (plotK) {
+    plot(kRange, silVals, type = "b",
+         xlab = "Number of clusters k",
+         ylab = "Avg. silhouette width",
+         main = "Selecting k by silhouette")
+    abline(v = bestK, lty = 2, col = "red")
+  }
+  
+  # 5) cut tree, assign clusters
+  clusters <- cutree(hc, k = bestK)
+  resDF    <- as.data.frame(enrichRes, stringsAsFactors = FALSE)
+  resDF$cluster <- clusters[ resDF$ID ]
+  
+  # 6) label Representative vs Member by Fold_Enrichment
+  resDF <- resDF %>%
+    group_by(cluster) %>%
+    mutate(status = if_else(
+      Fold_Enrichment == max(Fold_Enrichment),
+      "Representative",
+      "Member"
+    )) %>%
+    ungroup()
+  
+  return(resDF)
+}
+clusterGOsem <- function(eGoRes,
+                         ont,
+                         OrgDb       = org.Mm.eg.db,
+                         keytype     = "SYMBOL",
+                         measure     = "Wang",
+                         kRange      = 2:10) {
+  # required packages
+  require(GOSemSim)
+  require(cluster)
+  require(dplyr)
+  
+  # 1. build semantic data (compute IC only if needed)
+  semData <- godata(OrgDb,
+                    ont       = ont,
+                    keytype   = keytype,
+                    computeIC = measure %in% c("Resnik","Lin","Jiang","Rel"))
+  
+  # 2. pairwise semantic sim matrix
+  terms <- eGoRes$ID
+  n     <- length(terms)
+  simMat <- matrix(NA, nrow = n, ncol = n,
+                   dimnames = list(terms, terms))
+  for (i in seq_len(n)) {
+    for (j in seq_len(n)) {
+      simMat[i,j] <- termSim(terms[i], terms[j],
+                             semData = semData,
+                             method  = measure)
+    }
+  }
+  
+  # 3. hierarchical clustering on 1 − sim
+  distMat <- as.dist(1 - simMat)
+  hc      <- hclust(distMat, method = "average")
+  
+  # 4. pick best k by average silhouette width
+  avgSil <- function(k) {
+    tryCatch({
+      cl <- cutree(hc, k = k)
+      sil <- silhouette(cl, distMat)
+      mean(sil[, "sil_width"])
+    }, error = function(e) {
+      warning(sprintf("k = %d failed: %s", k, e$message))
+      NA_real_
+    })
+  }
+  silVals <- sapply(kRange, avgSil)
+  bestK   <- kRange[which.max(silVals)]
+  
+  # 5. cut tree and build result table
+  clusters <- cutree(hc, k = bestK)
+  resDF    <- as.data.frame(eGoRes)
+  resDF$cluster <- clusters[resDF$ID]
+  
+  # 6. label "Representative" vs "Member"
+  resDF <- resDF %>%
+    group_by(cluster) %>%
+    mutate(status = if_else(
+      FoldEnrichment == max(FoldEnrichment),
+      "Representative",
+      "Member"
+    )) %>%
+    ungroup()
+  
+  return(resDF)
+}
+avg_sil <- function(k) {
+  cl <- cutree(hc, k = k)
+  sil <- silhouette(cl, distMat)
+  mean(sil[, "sil_width"])
+}
+condColors <- c("synOFF6M_NoCasin" = "seashell3", "synOFF16M_NoCasin" = "gray47", "synOFF24M_NoCasin" = "gray5", 
+                "synON6M_NoCasin" = "lightcoral", "synON16M_NoCasin" = "red", "synON24M_NoCasin" = "red3",
+                "synOFF6M_YesCasin" = "darkseagreen1", "synOFF16M_YesCasin" = "darkseagreen3", "synOFF24M_YesCasin" = "darkseagreen4",
+                "synON6M_YesCasin" = "cadetblue1", "synON16M_YesCasin" = "cadetblue3", "synON24M_YesCasin" = "cadetblue4")
+manColors_CellLevel0 <- c("Neuron" = "royalblue",
+                          "Astrocyte" = "springgreen4", "Choroid Plexus" = "yellow3", "Microglia" = "plum3",
+                          "Oligodendrocyte" = "violetred2", "OPC" = "#F941D0", "Vascular Cell" = "tan2")
+
+manColors_CellLevel1 <- c("GABA Neuron" = "darkblue", "Vglut1 Neuron" = "darkred", "Vglut2 Neuron" = "palevioletred2",
+                          "Cholinergic Neuron" = "darkcyan","Dopaminergic Neuron" = "blueviolet",
+                          "Astrocyte" = "springgreen4", "Choroid Plexus" = "yellow3", "Microglia" = "plum3",
+                          "Oligodendrocyte" = "violetred2", "OPC" = "#F941D0", "Vascular Cell" = "tan2")
+
+manColors_CellLevel2 <- c(c("Vglut1-Bmpr1b" = "indianred3","Vglut1-Cdh20" = "tomato", "Vglut1-Col19a1" = "orangered2",
+                            "Vglut1-Foxp2" = "salmon3", "Vglut1-Mndal" = "tomato4", "Vglut1-Npas3" = "orangered",
+                            "Vglut1-Oprk1" = "violetred4", "Vglut1-Parm1" = "tomato3", "Vglut1-Prox1" = "red2",
+                            "Vglut1-Reln" = "salmon", "Vglut1-Rorb" = "orangered3", "Vglut1-Shc4" = "red3",
+                            "Vglut1-Sntb1" = "firebrick","Vglut1-Spag16" = "indianred2",
+                            
+                            "Vglut2-Bnc2" = "palevioletred1", "Vglut2-Nova1" = "pink",
+                            "Vglut2-Pappa2" = "pink2", "Vglut2-Sema3a" = "palevioletred3",
+                            "Vglut2-Sim1" = "plum1", "Vglut2-Synpo2" = "plum3",
+                            
+                            "GABA-Ano1-Ano2" = "dodgerblue3", "GABA-Cemip" = "deepskyblue3", "GABA-Chst9" = "dodgerblue4",
+                            "GABA-Etv1" = "deepskyblue2", "GABA-Frem1" = "darkslategray3", "GABA-Lamp5" = "cyan3",
+                            "GABA-Otx2" = "dodgerblue1", "GABA-Rgs9" = "blue", "GABA-Rmst-Tshz2" = "darkslategray4",
+                            "GABA-Six3" = "dodgerblue2", "GABA-Sst" = "dodgerblue1", "GABA-Vcan" = "cyan4","GABA-Vip" = "deepskyblue1",
+                            
+                            "Astrocyte" = "springgreen4",
+                            "Choroid Plexus" = "yellow3", "Microglia" = "plum3",
+                            "Oligodendrocyte" = "violetred2", "OPC" = "#F941D0", "Vascular Cell" = "tan2"
+                            
+                            ))
+normalize_and_scale <- function(x, min_val = -4, max_val = 4) {
+  normalized_x = (x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
+  scaled_x = normalized_x * (max_val - min_val) + min_val
+  return(scaled_x)
+}

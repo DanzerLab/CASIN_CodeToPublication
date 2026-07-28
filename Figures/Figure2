@@ -58,7 +58,7 @@ ggplot(clusters_counts2,
        y     = "value")
 
 ### GO enrichment
-ON24M_YesCasin_allres <- differential results allres sheet (see zenodo)
+ON24M_YesCasin_allres <- differential results allres sheet 24M ON CASIN vs 24M ON no CASIN (see zenodo)
 
 casinIntersect_patternGenes <- clusters$df$genes
 

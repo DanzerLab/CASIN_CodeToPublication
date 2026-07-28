@@ -1,0 +1,177 @@
+## visualization
+all_paths <- Additional Data 10
+
+edges_parsed <- all_paths %>%
+  separate(path, into = c("n1", "n2", "n3"), sep = " -> ", remove = FALSE) %>%
+  mutate(s1 = substr(edge_signs, 1, 1),
+         s2 = substr(edge_signs, 2, 2))
+
+edges_all <- bind_rows(
+  edges_parsed %>% select(from = n1, to = n2, sign = s1),
+  edges_parsed %>% select(from = n2, to = n3, sign = s2)
+) %>% distinct()
+
+tf_consensus <- all_paths %>%
+  group_by(target_TF) %>%
+  summarise(
+    n_up   = sum(predicted_TF_dir == "up"),
+    n_down = sum(predicted_TF_dir == "down"),
+    consensus = case_when(
+      n_up   == 0 ~ "down",
+      n_down == 0 ~ "up",
+      n_up   >  n_down ~ "mixed_up",
+      n_up   <  n_down ~ "mixed_down",
+      TRUE             ~ "tied"
+    ),
+    .groups = "drop"
+  )
+
+all_node_ids <- unique(c(edges_all$from, edges_all$to))
+
+nodes_vn <- data.frame(id = all_node_ids, label = all_node_ids,
+                       stringsAsFactors = FALSE) %>%
+  left_join(tf_consensus, by = c("id" = "target_TF")) %>%
+  mutate(
+    type = case_when(
+      id == "CDC42"                       ~ "seed",
+      id %in% tf_consensus$target_TF      ~ "TF",
+      TRUE                                ~ "intermediate"
+    ),
+    level = case_when(
+      type == "seed"         ~ 1,
+      type == "intermediate" ~ 2,
+      type == "TF"           ~ 3
+    ),
+    color = case_when(
+      type == "seed"               ~ "#1565C0",      # blue diamond
+      type == "intermediate"       ~ "#BDBDBD",      # grey
+      consensus == "down"          ~ "#1976D2",      # confident down
+      consensus == "up"            ~ "#D32F2F",      # confident up
+      consensus %in% c("mixed_up","mixed_down","tied") ~ "#FB8C00"  # ambiguous
+    ),
+    shape = case_when(
+      type == "seed" ~ "diamond",
+      type == "TF"   ~ "box",
+      TRUE           ~ "ellipse"
+    ),
+    title = case_when(
+      type == "seed" ~ "CDC42 (perturbed: activity decreased)",
+      type == "TF"   ~ paste0("<b>", id, "</b><br>",
+                              "predicted: ", consensus, "<br>",
+                              "paths up: ",   n_up, "<br>",
+                              "paths down: ", n_down),
+      TRUE           ~ paste0("<b>", id, "</b><br>(intermediate)")
+    )
+  ) %>%
+  select(id, label, level, color, shape, title)
+
+g_vis <- graph_from_data_frame(edges_all, vertices = nodes_vn, directed = TRUE)
+layout <- create_layout(g_vis, layout = "sugiyama")
+
+{
+  layout$x[which(layout$name == "JUN")] <- layout$x[which(layout$name == "PRKCZ")]
+  layout$x[which(layout$name == "SP1")] <- layout$x[which(layout$name == "MAPK12")]
+  layout$x[which(layout$name == "CREB1")] <- layout$x[which(layout$name == "PIK3R1")]
+  layout$x[which(layout$name == "AR")] <- layout$x[which(layout$name == "GSK3B")]
+  layout$x[which(layout$name == "MYC")] <- layout$x[which(layout$name == "TNK2")]
+  layout$x[which(layout$name == "ESR1")] <- layout$x[which(layout$name == "PAK1")]
+}
+
+ggraph(layout) +
+  geom_edge_link(aes(colour = sign, linetype = sign),
+                 arrow = arrow(length = unit(2.5, "mm"), type = "closed"),
+                 end_cap = circle(3, "mm")) +
+  geom_node_point(aes(colour = color), size = 6) +
+  geom_node_text(aes(label = label), repel = TRUE, size = 3) +
+  scale_edge_colour_manual(values = c("+" = "#2E7D32", "-" = "#C62828")) +
+  scale_edge_linetype_manual(values = c("+" = "solid", "-" = "solid")) +
+  scale_colour_identity() +
+  theme_void()
+
+tf_scores <- all_paths %>%
+  mutate(score_contrib = ifelse(predicted_TF_dir == "up", 1L, -1L)) %>%
+  group_by(target_TF) %>%
+  summarise(
+    aggregate_score = sum(score_contrib),
+    n_paths         = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    direction = ifelse(aggregate_score >= 0,
+                       "TF more active (CDC42 inhibited)",
+                       "TF less active (CDC42 inhibited)")
+  ) %>%
+  arrange(aggregate_score) %>%
+  mutate(target_TF = factor(target_TF, levels = target_TF))
+
+ggplot(tf_scores, aes(x = target_TF, y = aggregate_score, fill = direction)) +
+  geom_col(width = 0.7, colour = "black", linewidth = 0.3) +
+  geom_hline(yintercept = 0, colour = "black") +
+  geom_text(aes(label = aggregate_score,
+                vjust = ifelse(aggregate_score >= 0, -0.5, 1.3)),
+            size = 3.5) +
+  scale_fill_manual(values = c(
+    "TF more active (CDC42 inhibited)" = "#C62828",
+    "TF less active (CDC42 inhibited)" = "#1976D2"
+  )) +
+  labs(
+    title    = "Predicted TF activity under CDC42 inhibition",
+    subtitle = "Aggregated over all signed CDC42 -> effector -> TF paths in OmniPath",
+    x        = NULL,
+    y        = "Aggregate path score\n(# paths predicting up - # paths predicting down)",
+    fill     = NULL
+  ) + ylim(-13,0) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position    = "top",
+    panel.grid.major.x = element_blank(),
+    plot.title         = element_text(face = "bold")
+  )
+
+genes_to_exclude <- c("PAK4","PAK1","MAP3K5","MAPK14","MAPK8",
+                      "MAPK1","MAPK11","PAK2","MAPK13","MAPK12",
+                      "MAPK9","MAP3K1","MAPK10")
+
+# \\b = word boundary, so "MAPK1" won't accidentally match "MAPK10/11/12/13/14"
+pattern <- paste0("\\b(", paste(genes_to_exclude, collapse = "|"), ")\\b")
+
+all_paths_noMAPK <- all_paths[grepl(pattern, all_paths$path), ]
+tf_scores <- all_paths_noMAPK %>%
+  mutate(score_contrib = ifelse(predicted_TF_dir == "up", 1L, -1L)) %>%
+  group_by(target_TF) %>%
+  summarise(
+    aggregate_score = sum(score_contrib),
+    n_paths         = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    direction = ifelse(aggregate_score >= 0,
+                       "TF more active (CDC42 inhibited)",
+                       "TF less active (CDC42 inhibited)")
+  ) %>%
+  arrange(aggregate_score) %>%
+  mutate(target_TF = factor(target_TF, levels = target_TF))
+
+ggplot(tf_scores, aes(x = target_TF, y = aggregate_score, fill = direction)) +
+  geom_col(width = 0.7, colour = "black", linewidth = 0.3) +
+  geom_hline(yintercept = 0, colour = "black") +
+  geom_text(aes(label = aggregate_score,
+                vjust = ifelse(aggregate_score >= 0, -0.5, 1.3)),
+            size = 3.5) +
+  scale_fill_manual(values = c(
+    "TF more active (CDC42 inhibited)" = "#C62828",
+    "TF less active (CDC42 inhibited)" = "#1976D2"
+  )) + ylim(-13,0) +
+  labs(
+    title    = "Predicted TF activity under CDC42 inhibition",
+    subtitle = "Aggregated over all signed CDC42 -> effector -> TF paths in OmniPath",
+    x        = NULL,
+    y        = "Aggregate path score\n(# paths predicting up - # paths predicting down)",
+    fill     = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position    = "top",
+    panel.grid.major.x = element_blank(),
+    plot.title         = element_text(face = "bold")
+  )

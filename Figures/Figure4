@@ -1,0 +1,35 @@
+randomResults_df <- see github Objects/OTP_randomSign_results
+pdCasinResults_combined <- see github Objects/OTP_pdCASIN_results 
+
+global_levels <- pdCasinResults_combined %>%
+  pull(geneSymbol) %>% 
+  unique() %>% 
+  # bring Random Signature to front:
+  fct_relevel("Random Signature", after = 0)
+
+palette_cols <- viridis(length(global_levels), option = "turbo")
+names(palette_cols) <- global_levels
+
+for(dis in unique(pdCasinResults_combined$name)) {
+  df_sub <- pdCasinResults_combined %>%
+    filter(name == dis) %>%
+    mutate(geneSymbol = fct_reorder(geneSymbol, score, .desc = FALSE)) %>% 
+    # 2) bump "Random Signature" to the front 
+    mutate(geneSymbol = fct_relevel(geneSymbol, "Random Signature", after = 0))
+  
+  print(
+    ggplot(df_sub, aes(x = geneSymbol, y = score, fill = geneSymbol)) +
+      geom_col() +
+      scale_fill_manual(values = palette_cols, drop = FALSE) +
+      theme_bw() +
+      labs(
+        title = paste("OpenTargets scores for", dis),
+        x     = "Gene symbol",
+        y     = "Mean score"
+      ) +
+      theme(
+        axis.text.x     = element_text(angle = 45, hjust = 1),
+        legend.position = "none"
+      )
+  )
+}

@@ -1,0 +1,1362 @@
+# Functions ----
+# Function to calculate the number of edges between two topics
+count_edges_between_topics <- function(graph, topic1, topic2) {
+  edges <- E(graph)[from(V(graph)[topic == topic1]) & to(V(graph)[topic == topic2])]
+  return(length(edges))
+}
+place_in_circle <- function(center_x, center_y, num_points, radius = 1) {
+  angles <- seq(from = 0, to = 2 * pi, length.out = num_points + 1)
+  angles <- angles[-length(angles)]  # Remove the last point because it's the same as the first
+  x <- center_x + radius * cos(angles)
+  y <- center_y + radius * sin(angles)
+  return(data.frame(x = x, y = y))
+}
+calculate_positions <- function(n, center = c(0, 0), radius = c(1, 1)) {
+  angles <- seq(0, 2 * pi, length.out = n + 1)
+  x <- center[1] + radius[1] * cos(angles)
+  y <- center[2] + radius[2] * sin(angles)
+  data.frame(x = x[-length(x)], y = y[-length(y)]) # Remove the last point because it's the same as the first
+}
+scale_column <- function(column) {
+  # Apply the scaling formula
+  scaled_column = -4 + ((column - min(column)) * (8)) / (max(column) - min(column))
+  return(scaled_column)
+}
+get_STRING_dataframe <- function(string_db, geneSet){
+  STRING_rows_df <- data.frame(
+    source = character(),
+    target = character(),
+    source_genesymbol = character(),
+    target_genesymbol = character(),
+    consensus_stimulation = numeric(),
+    consensus_inhibition = numeric(),
+    sources = character(),
+    type = character(),
+    stringsAsFactors = FALSE # Avoid converting strings to factors
+  )
+  for (gene in geneSet){
+    print(paste0("Getting STRING Interactions for ", gene))
+    string_gene = string_db$mp(gene)
+    #print("Test1")
+    gene_interact <- string_db$get_neighbors(string_gene)
+    #print("Test2")
+    gene_interact <- sapply(gene_interact, function(id) {
+      gene_name <- string_db$`.->proteins`$preferred_name[which(string_db$`.->proteins`$protein_external_id == id)]
+      if(length(gene_name) > 0) return(gene_name) else return(NA)
+    })
+    #print("Test3")
+    rows_to_add <- purrr::map_dfr(gene_interact, function(interact_gene) {
+      # Define values for each column as needed. Modify column values as per your requirement.
+      data.frame(
+        source = c(gene,interact_gene),
+        target = c(interact_gene,gene),
+        source_genesymbol = c(gene, interact_gene),
+        target_genesymbol = c(interact_gene, gene),
+        consensus_stimulation = c(0,0), # Specify if needed
+        consensus_inhibition = c(0,0), # Specify if needed
+        sources = c("STRING", "STRING"), # Specify if needed
+        type = c("PPI","PPI") # Specify if needed
+      )
+    })
+    STRING_rows_df <- rbind(STRING_rows_df, rows_to_add)
+  }
+  return(STRING_rows_df)
+}
+get_vertex_color <- function(gene_name, PD_late, PD_mid, PD_early) {
+  in_set1 <- gene_name %in% PD_late
+  in_set2 <- gene_name %in% PD_mid
+  in_set3 <- gene_name %in% PD_early
+  
+  if (in_set1) {
+    return("PD_late") # Color for genes in all three gene sets
+  } else if (in_set2) {
+    return("PD_mid") # Color for genes in gene sets 1 and 2
+  } else if (in_set3) {
+    return("PD_early") # Color for genes in gene sets 1 and 3
+  } else {
+    return("None") # Color for genes in none of the gene sets
+  }
+}
+oraNetwork <- function(geneSet, db, ora_df, type){
+  if (type != "Source" && type != "Target" && type != "Both"){
+    print("Invalid type value! Use Source or Target instead!")
+  }
+  
+  genes <- intersect(geneSet, unique(c(db$source_genesymbol, db$target_genesymbol)))
+  g <- interaction_graph(interactions = database)
+  all_edges <- c()
+  for (gene in genes) {
+    print(gene)
+    # Find the neighborhood of the current gene within distance 2
+    neighborhood_genes <- unlist(neighborhood(graph = g, order = 2, nodes = gene, mode = "out"))
+    neighborhood_gene_names <- V(g)[neighborhood_genes]$name
+    filtered_neighborhood_genes <- neighborhood_gene_names[neighborhood_gene_names %in% genes]
+    for (neighbor_gene in filtered_neighborhood_genes) {
+      if (neighbor_gene != gene) { # Ensure we don't calculate a path to itself
+        sp <- shortest_paths(g, from = gene, to = neighbor_gene, mode = "out", algorithm = "unweighted", output = "both")
+        
+        # If path length is up to 2, prepare the edges for this path
+        if (!is.null(sp$vpath[[1]]) && length(sp$vpath[[1]]) <= 3) {
+          path_edges <- sp$epath[[1]]
+          all_edges <- c(all_edges, path_edges)
+        }
+      }
+    }
+  }
+  all_edges <- unique(all_edges)
+  subgraph_g <- subgraph.edges(g, eids = all_edges, delete.vertices = TRUE)
+  source_target <- as.data.frame(ends(subgraph_g, E(subgraph_g)))
+  popSize <- nrow(db)
+  sampleSize <- length(E(subgraph_g))
+  oraRes_df <- data.frame(
+    gene = character(),
+    geneRatio = character(),
+    bgRatio = character(),
+    pValue = numeric(),
+    geneID = character(),
+    count = integer()
+  )
+  if (type == "Source"){
+    for (gene in unique(V(subgraph_g)$name)){
+      if (gene %in% ora_df$source_genesymbol){
+        Ypop <- ora_df$length_of_list[[which(ora_df$source_genesymbol == gene)]]
+        Ysample <- length(source_target$V1[which(source_target$V1== gene)])
+        if (Ypop >= 10){
+          pval <- phyper(Ysample-1, Ypop, popSize-Ypop, sampleSize, lower.tail = FALSE)
+          temp_df <- data.frame(
+            gene = gene,
+            geneRatio = paste0(Ysample, "/", sampleSize),
+            bgRatio = paste0(Ypop, "/", popSize),
+            pValue = pval,
+            geneID = paste(source_target$V2[which(source_target$V1== gene)], collapse = "/"),
+            count = Ysample
+          )
+        }else if (Ypop < 10){
+          pval <- 1
+          temp_df <- data.frame(
+            gene = gene,
+            geneRatio = paste0(Ysample, "/", sampleSize),
+            bgRatio = paste0(Ypop, "/", popSize),
+            pValue = pval,
+            geneID = paste(source_target$V2[which(source_target$V1== gene)], collapse = "/"),
+            count = Ysample
+          )
+        }
+        oraRes_df <- rbind(oraRes_df, temp_df)
+      }
+    }
+    oraRes_df$pAdj <- p.adjust(oraRes_df$pValue, method = "BH")
+    oraRes_df$pAdj[which(oraRes_df$pValue == 10)] <- 10
+  } else if (type == "Target"){
+    for (gene in unique(V(subgraph_g)$name)){
+      if (gene %in% ora_df$target_genesymbol){
+        Ypop <- ora_df$length_of_list[[which(ora_df$target_genesymbol == gene)]]
+        Ysample <- length(source_target$V2[which(source_target$V2== gene)])
+        if (Ypop >= 10){
+          pval <- phyper(Ysample-1, Ypop, popSize-Ypop, sampleSize, lower.tail = FALSE)
+          temp_df <- data.frame(
+            gene = gene,
+            geneRatio = paste0(Ysample, "/", sampleSize),
+            bgRatio = paste0(Ypop, "/", popSize),
+            pValue = pval,
+            geneID = paste(source_target$V1[which(source_target$V2== gene)], collapse = "/"),
+            count = Ysample
+          )
+        }else if (Ypop < 10){
+          pval <- 1
+          temp_df <- data.frame(
+            gene = gene,
+            geneRatio = paste0(Ysample, "/", sampleSize),
+            bgRatio = paste0(Ypop, "/", popSize),
+            pValue = pval,
+            geneID = paste(source_target$V2[which(source_target$V1== gene)], collapse = "/"),
+            count = Ysample
+          )
+        }
+        oraRes_df <- rbind(oraRes_df, temp_df)
+      }
+    }
+    oraRes_df$pAdj <- p.adjust(oraRes_df$pValue, method = "BH")
+    oraRes_df$pAdj[which(oraRes_df$pValue == 10)] <- 10
+  }else if (type == "Both"){
+    for (gene in unique(V(subgraph_g)$name)){
+      if (gene %in% ora_df$gene){
+        Ypop <- ora_df$combined_length[[which(ora_df$gene == gene)]]
+        Ysample <- length(source_target$V2[which(source_target$V2== gene)])
+        if (Ypop >= 10){
+          pval <- phyper(Ysample-1, Ypop, popSize-Ypop, sampleSize, lower.tail = FALSE)
+          temp_df <- data.frame(
+            gene = gene,
+            geneRatio = paste0(Ysample, "/", sampleSize),
+            bgRatio = paste0(Ypop, "/", popSize),
+            pValue = pval,
+            geneID = paste(source_target$V1[which(source_target$V2== gene)], collapse = "/"),
+            count = Ysample
+          )
+        }else if (Ypop < 10){
+          pval <- 1
+          temp_df <- data.frame(
+            gene = gene,
+            geneRatio = paste0(Ysample, "/", sampleSize),
+            bgRatio = paste0(Ypop, "/", popSize),
+            pValue = pval,
+            geneID = paste(source_target$V2[which(source_target$V1== gene)], collapse = "/"),
+            count = Ysample
+          )
+        }
+        oraRes_df <- rbind(oraRes_df, temp_df)
+      }
+    }
+    oraRes_df$pAdj <- p.adjust(oraRes_df$pValue, method = "BH")
+    oraRes_df$pAdj[which(oraRes_df$pValue == 10)] <- 10
+  }
+  
+  return(oraRes_df)
+}
+database_Network_ora <- function(database, geneSet, geneSet_name, n_hits,
+                                 master_df,layout, plotTitle = "NoTitle", showZero = FALSE){
+  
+  genes <- intersect(c(geneSet), unique(c(database$source_genesymbol, database$target_genesymbol)))
+  g <- interaction_graph(interactions = database)
+  all_edges <- c()
+  for (gene in genes) {
+    print(gene)
+    # Find the neighborhood of the current gene within distance 2
+    neighborhood_genes <- unlist(neighborhood(graph = g, order = 2, nodes = gene, mode = "out"))
+    neighborhood_gene_names <- V(g)[neighborhood_genes]$name
+    filtered_neighborhood_genes <- neighborhood_gene_names[neighborhood_gene_names %in% genes]
+    for (neighbor_gene in filtered_neighborhood_genes) {
+      if (neighbor_gene != gene) { # Ensure we don't calculate a path to itself
+        sp <- shortest_paths(g, from = gene, to = neighbor_gene, mode = "out", algorithm = "unweighted", output = "both")
+        
+        # If path length is up to 2, prepare the edges for this path
+        if (!is.null(sp$vpath[[1]]) && length(sp$vpath[[1]]) <= 3) {
+          path_edges <- sp$epath[[1]]
+          all_edges <- c(all_edges, path_edges)
+        }
+      }
+    }
+  }
+  all_edges <- unique(all_edges)
+  subgraph_g <- subgraph.edges(g, eids = all_edges, delete.vertices = TRUE)
+  subgraph_g <- as.directed(subgraph_g, mode = "mutual")
+  
+  if (showZero == TRUE){
+    isolated_genes <- setdiff(genes, V(subgraph_g)$name)
+    # Add isolated genes as vertices to 'subgraph_g'
+    for (gene in isolated_genes) {
+      subgraph_g <- add_vertices(subgraph_g, 1, name = gene)
+    }
+  }
+  # Prepare a named vector of colors based on the desiredComp values
+  ora_df_target <- master_df[which(master_df$geneSetName == geneSet_name & master_df$Direction == "Target"),]
+  ora_df_source <- master_df[which(master_df$geneSetName == geneSet_name & master_df$Direction == "Source"),]
+  ora_df_both <- master_df[which(master_df$geneSetName == geneSet_name & master_df$Direction == "Both"),]
+  top_target <- ora_df_target %>%
+    arrange(pAdj) %>%
+    slice_head(n = n_hits) %>%
+    dplyr::filter(count > 2)%>%
+    pull(gene)
+  top_source <- ora_df_source %>%
+    arrange(pAdj) %>%
+    slice_head(n = n_hits)%>%
+    dplyr::filter(count > 2)%>%
+    pull(gene)
+  top_central <- ora_df_both %>%
+    arrange(pAdj) %>%
+    slice_head(n = 20)%>%
+    dplyr::filter(count > 2)%>%
+    pull(gene)
+  
+  centrality_df <- data.frame(
+    gene = V(subgraph_g)$name,
+    degree = igraph::degree(subgraph_g),
+    eigen = evcent(subgraph_g)$vector,
+    betweenness = betweenness(subgraph_g, directed = FALSE)
+  )
+  centrality_df$degree_rank <- rank(-centrality_df$degree, ties.method = "min")
+  centrality_df$eigen_rank <- rank(-centrality_df$eigen, ties.method = "min")
+  centrality_df$betweenness_rank <- rank(-centrality_df$betweenness, ties.method = "min")
+  centrality_df$centrality <- rowMeans(centrality_df[,c("degree_rank", "eigen_rank", "betweenness_rank")])
+  
+  V(subgraph_g)$centrality <- centrality_df$centrality
+  V(subgraph_g)$regulator <- ifelse(V(subgraph_g)$name %in% top_central, "Regulator", "No Info")
+  #V(subgraph_g)$color <- sapply(V(subgraph_g)$name, get_vertex_color, signatures_list$PD_late, signatures_list$PD_mid, signatures_list$PD_early)
+  V(subgraph_g)$color <- ifelse(V(subgraph_g)$name %in% top_target & V(subgraph_g)$name %in% top_source, "Both",
+                                ifelse(V(subgraph_g)$name %in% top_target, "Downstream",
+                                       ifelse(V(subgraph_g)$name %in% top_source, "Upstream", "No Info"))
+  )
+  #V(subgraph_g)$text_color <- sapply(V(subgraph_g)$name, get_vertex_color, PIDCgraph_list$PD_late_intersect, PIDCgraph_list$PD_mid_intersect, PIDCgraph_list$PD_early)
+  V(subgraph_g)$text_color <- ifelse(V(subgraph_g)$name %in% genes, "PIDC", "None")
+  #V(subgraph_g)$centrality <- sapply(V(subgraph_g)$name, function(vertex_name) assign_centrality(subgraph_g, vertex_name))
+  
+  E(subgraph_g)$color <- ifelse(E(subgraph_g)$consensus_stimulation == 1, "Stimulation", 
+                                ifelse(E(subgraph_g)$consensus_inhibition == 1, "Inhibition", "Unknown"))
+  
+  plot_direction <- ggraph(subgraph_g, layout = layout) + 
+    geom_edge_link(aes(color = E(subgraph_g)$color,start_cap = label_rect(node1.name),
+                       end_cap = label_rect(node2.name)), 
+                   arrow = arrow(type = "closed", length = unit(4, "mm"))) +
+    geom_node_label(aes(label = name, fill = V(subgraph_g)$color, col = text_color),
+                    repel = FALSE, alpha = 0.6,size = 5) +
+    #scale_fill_manual(values = c("PD_late" = "palegreen3","PD_mid" = "lightsalmon4","PD_early" = "slateblue","None" = "grey50"),name = "Gene Source") + 
+    scale_fill_manual(values = c("Downstream" = "blue", "Upstream" = "red", "Both" = "darkorchid1","No Info" = "grey50"), name = "Regulators") +
+    scale_color_manual(values = c("PIDC"= "gold", "None" = "black"), 
+                       name = "PIDC core") +
+    #scale_size_manual(values = c())+
+    scale_edge_color_manual(values = c("Stimulation" = "red", "Inhibition" = "blue", "Unknown" = "black"),
+                            name = "Interaction Type") +
+    theme_graph() + 
+    ggtitle(plotTitle) +
+    theme(text = element_text(family = "Times", size = 15), 
+          plot.title = element_text(family = "Times", size = 20)) 
+  
+  plot_reg <- ggraph(subgraph_g, layout = layout) + 
+    geom_edge_link(aes(color = E(subgraph_g)$color,start_cap = label_rect(node1.name),
+                       end_cap = label_rect(node2.name)), 
+                   arrow = arrow(type = "closed", length = unit(4, "mm"))) +
+    geom_node_label(aes(label = name, fill = V(subgraph_g)$regulator, col = text_color),
+                    repel = FALSE, alpha = 0.6,size = 5) +
+    #scale_fill_manual(values = c("PD_late" = "palegreen3","PD_mid" = "lightsalmon4","PD_early" = "slateblue","None" = "grey50"),name = "Gene Source") + 
+    scale_fill_manual(values = c("Regulator" = "orange", "No Info" = "grey50"), name = "Regulators") +
+    scale_color_manual(values = c("PIDC"= "gold", "None" = "black"), 
+                       name = "PIDC core") +
+    #scale_size_manual(values = c())+
+    scale_edge_color_manual(values = c("Stimulation" = "red", "Inhibition" = "blue", "Unknown" = "black"),
+                            name = "Interaction Type") +
+    theme_graph() + 
+    ggtitle(plotTitle) +
+    theme(text = element_text(family = "Times", size = 15), 
+          plot.title = element_text(family = "Times", size = 20)) 
+  return(list(graph = subgraph_g, plot_direction = plot_direction, plot_reg = plot_reg))
+}
+bridge_network <- function(database, gene_source, gene_target, layout = "stress", plotTitle = "NoTitle",
+                           showZero = FALSE){
+  
+  genes_source <- intersect(c(gene_source), unique(c(database$source_genesymbol, database$target_genesymbol)))
+  genes_target <- intersect(c(gene_target), unique(c(database$source_genesymbol, database$target_genesymbol)))
+  OPI_g <- interaction_graph(interactions = database)
+  all_edges <- c()
+  for (i in 1:length(genes_source)) {
+    for (j in 1:length(genes_target)) {
+      sp <- shortest_paths(OPI_g, from = genes_source[i], to = genes_target[j], output = "epath")
+      if (!is.null(sp$epath[[1]]) && length(sp$epath[[1]]) %in% c(1,2)) {
+        path_edges <- sp$epath[[1]]
+        all_edges <- c(all_edges, path_edges)
+      }
+    }
+  }
+  all_edges <- unique(all_edges)
+  subgraph_g <- subgraph.edges(OPI_g, eids = all_edges, delete.vertices = TRUE)
+  subgraph_g <- as.directed(subgraph_g, mode = "mutual")
+  
+  V(subgraph_g)$text_color <- sapply(V(subgraph_g)$name, get_vertex_color, PIDCgraph_list$PD_late_intersect, PIDCgraph_list$PD_mid_intersect, PIDCgraph_list$PD_early)
+  #V(subgraph_g)$centrality <- sapply(V(subgraph_g)$name, function(vertex_name) assign_centrality(subgraph_g, vertex_name))
+  
+  
+  E(subgraph_g)$color <- ifelse(E(subgraph_g)$consensus_stimulation == 1, "Stimulation", 
+                                ifelse(E(subgraph_g)$consensus_inhibition == 1, "Inhibition", "Unknown"))
+  
+  plot <- ggraph(subgraph_g, layout = layout) + 
+    geom_edge_link(aes(color = E(subgraph_g)$color,start_cap = label_rect(node1.name),
+                       end_cap = label_rect(node2.name)), 
+                   arrow = arrow(type = "closed", length = unit(4, "mm"))) +
+    geom_node_label(aes(label = name, col = text_color), repel = FALSE, alpha = 0.6,size = 5) +
+    #scale_fill_manual(values = c("PD_late" = "palegreen3","PD_mid" = "lightsalmon4","PD_early" = "slateblue","None" = "grey50"),name = "Gene Source") + 
+    scale_color_manual(values = c("PD_late" = "gold", "PD_mid" = "violet", "PD_early" = "gold", "None" = "black"), 
+                       name = "PIDC core") +
+    #scale_size_manual(values = c())+
+    scale_edge_color_manual(values = c("Stimulation" = "red", "Inhibition" = "blue", "Unknown" = "black"),
+                            name = "Interaction Type") +
+    theme_graph() + 
+    ggtitle(plotTitle) +
+    theme(text = element_text(family = "Times", size = 15), 
+          plot.title = element_text(family = "Times", size = 20)) 
+  return(list(graph = subgraph_g, plot = plot))
+}
+database_Network_ora_PIDC <- function(database, geneSet, geneSet_name, n_hits,
+                                      master_df,layout, plotTitle = "NoTitle", showZero = FALSE){
+  
+  genes <- intersect(c(geneSet), unique(c(database$source_genesymbol, database$target_genesymbol)))
+  OPI_g <- interaction_graph(interactions = database)
+  all_edges <- c()
+  for (i in 1:(length(genes)-1)) {
+    for (j in (i+1):length(genes)) {
+      sp <- shortest_paths(OPI_g, from = genes[i], to = genes[j], output = "epath")
+      sp2 <- shortest_paths(OPI_g, from = genes[j], to = genes[i], output = "epath")
+      if (!is.null(sp$epath[[1]]) && length(sp$epath[[1]]) %in% c(1,2)) {
+        path_edges <- sp$epath[[1]]
+        all_edges <- c(all_edges, path_edges)
+      }else if (!is.null(sp2$epath[[1]]) && length(sp2$epath[[1]]) %in% c(1,2)){
+        path_edges <- sp2$epath[[1]]
+        all_edges <- c(all_edges, path_edges)
+      }
+    }
+  }
+  all_edges <- unique(all_edges)
+  subgraph_g <- subgraph.edges(OPI_g, eids = all_edges, delete.vertices = TRUE)
+  subgraph_g <- as.directed(subgraph_g, mode = "mutual")
+  
+  if (showZero == TRUE){
+    isolated_genes <- setdiff(genes, V(subgraph_g)$name)
+    # Add isolated genes as vertices to 'subgraph_g'
+    for (gene in isolated_genes) {
+      subgraph_g <- add_vertices(subgraph_g, 1, name = gene)
+    }
+  }
+  # Prepare a named vector of colors based on the desiredComp values
+  ora_df_target <- master_df[which(master_df$geneSetName == geneSet_name & master_df$Direction == "Target"),]
+  ora_df_source <- master_df[which(master_df$geneSetName == geneSet_name & master_df$Direction == "Source"),]
+  top_target <- ora_df_target %>%
+    arrange(pAdj) %>%
+    slice_head(n = n_hits) %>%
+    filter(count > 2)%>%
+    pull(gene)
+  top_source <- ora_df_source %>%
+    arrange(pAdj) %>%
+    slice_head(n = n_hits)%>%
+    filter(count > 2)%>%
+    pull(gene)
+  
+  PIDC_ON_df <- as.data.frame(list(gene = V(PIDC_list$ON24BGN_PD_signature_adjMatrix)$name, 
+                                   centrality = V(PIDC_list$ON24BGN_PD_signature_adjMatrix)$centrality))
+  PIDC_lateON_df <- as.data.frame(list(gene=V(PIDC_list$lateON24BGN_PD_signature_adjMatrix)$name,
+                                       centrality = V(PIDC_list$lateON24BGN_PD_signature_adjMatrix)$centrality))
+  PIDC_merged <- merge(PIDC_ON_df, PIDC_lateON_df, by = "gene")
+  PIDC_merged$centrality <- rowMeans(PIDC_merged[,c(2,3)])
+  PIDC_merged$rankCentrality <- rank(PIDC_merged$centrality)
+  ranks_vector <- setNames(PIDC_merged$centrality, PIDC_merged$gene)
+  
+  V(subgraph_g)$centrality <- sapply(V(subgraph_g)$name, function(name) {
+    if(name %in% names(ranks_vector)) {
+      return(ranks_vector[name])
+    } else {
+      return(max(PIDC_merged$rankCentrality) + 1)
+    }
+  })
+  
+  
+  #V(subgraph_g)$color <- sapply(V(subgraph_g)$name, get_vertex_color, signatures_list$PD_late, signatures_list$PD_mid, signatures_list$PD_early)
+  V(subgraph_g)$color <- ifelse(V(subgraph_g)$name %in% top_target & V(subgraph_g)$name %in% top_source, "Both",
+                                ifelse(V(subgraph_g)$name %in% top_target, "Downstream",
+                                       ifelse(V(subgraph_g)$name %in% top_source, "Upstream", "No Info"))
+  )
+  #V(subgraph_g)$text_color <- sapply(V(subgraph_g)$name, get_vertex_color, PIDCgraph_list$PD_late_intersect, PIDCgraph_list$PD_mid_intersect, PIDCgraph_list$PD_early)
+  V(subgraph_g)$text_color <- ifelse(V(subgraph_g)$name %in% genes, "PIDC", "None")
+  #V(subgraph_g)$centrality <- sapply(V(subgraph_g)$name, function(vertex_name) assign_centrality(subgraph_g, vertex_name))
+  
+  E(subgraph_g)$color <- ifelse(E(subgraph_g)$consensus_stimulation == 1, "Stimulation", 
+                                ifelse(E(subgraph_g)$consensus_inhibition == 1, "Inhibition", "Unknown"))
+  
+  plot <- ggraph(subgraph_g, layout = layout) + 
+    geom_edge_link(aes(color = E(subgraph_g)$color,start_cap = label_rect(node1.name),
+                       end_cap = label_rect(node2.name)), 
+                   arrow = arrow(type = "closed", length = unit(4, "mm"))) +
+    geom_node_label(aes(label = name, fill = V(subgraph_g)$color, col = text_color), 
+                    size = (8 / (min(V(subgraph_g)$centrality) - max(V(subgraph_g)$centrality))) * V(subgraph_g)$centrality + 
+                      (10 - (8 / (min(V(subgraph_g)$centrality) - max(V(subgraph_g)$centrality))) * min(V(subgraph_g)$centrality)),
+                    repel = FALSE, alpha = 0.6,size = 5) +
+    #scale_fill_manual(values = c("PD_late" = "palegreen3","PD_mid" = "lightsalmon4","PD_early" = "slateblue","None" = "grey50"),name = "Gene Source") + 
+    scale_fill_manual(values = c("Downstream" = "blue", "Upstream" = "red", "Both" = "darkorchid1","No Info" = "grey50"), name = "Regulators") +
+    scale_color_manual(values = c("PIDC"= "gold", "None" = "black"), 
+                       name = "PIDC core") +
+    #scale_size_manual(values = c())+
+    scale_edge_color_manual(values = c("Stimulation" = "red", "Inhibition" = "blue", "Unknown" = "black"),
+                            name = "Interaction Type") +
+    theme_graph() + 
+    ggtitle(plotTitle) +
+    theme(text = element_text(family = "Times", size = 15), 
+          plot.title = element_text(family = "Times", size = 20)) 
+  
+  return(list(graph = subgraph_g, plot = plot))
+}
+subset_cdc42_graph_by_distance<- function(graph, center = "Cdc42", distance = 2) {
+  
+  # 1. Find all vertices within 'distance' steps from 'center'
+  #    If your graph is directed and you want out-neighbors only,
+  #    use mode = "out". (Otherwise, for undirected or both directions, use mode = "all".)
+  vertices_in_range <- neighborhood(
+    graph, 
+    order = distance, 
+    nodes = center, 
+    mode  = "out" 
+  )[[1]]
+  
+  # 2. Create an induced subgraph from that set of vertices
+  sub_g <- induced_subgraph(graph, vids = vertices_in_range)
+  
+  # Return the induced subgraph
+  return(sub_g)
+}
+#Helper to pull in a set of genes (vertices + their edges) from a source graph
+add_vertices_and_edges <- function(target, source, genes) {
+  v_attrs <- list.vertex.attributes(source)
+  e_attrs <- list.edge.attributes(source)
+  
+  for (g in genes) {
+    # --- add the vertex (with its attributes) if it isn't already there ---
+    if (! (g %in% V(target)$name) ) {
+      vals <- lapply(v_attrs, function(a) vertex_attr(source, a, which(V(source)$name == g)))
+      names(vals) <- v_attrs
+      target <- add_vertices(target, 1, attr = vals)
+    }
+    
+    # --- pull in every edge incident on g, if both ends now live in target ---
+    inc_edges <- incident(source, g, mode = "all")
+    for (e in inc_edges) {
+      ends_e <- ends(source, e)
+      if (all(ends_e %in% V(target)$name)) {
+        # extract edge‐attributes
+        vals <- lapply(e_attrs, function(a) edge_attr(source, a, e))
+        names(vals) <- e_attrs
+        target <- add_edges(target, ends_e, attr = vals)
+      }
+    }
+  }
+  target
+}
+# helper to drop all but a whitelist of vertex attrs
+prune_vertex_attrs <- function(g, keep) {
+  to_drop <- setdiff(list.vertex.attributes(g), keep)
+  for(a in to_drop) g <- delete_vertex_attr(g, a)
+  g
+}
+# helper to build the reg vector
+make_regulation <- function(vnames, down1, down2, up1, up2, 
+                            tag_down1, tag_down2, tag_up1, tag_up2){
+  sapply(vnames, function(g){
+    tags <- c()
+    if(g %in% down1) tags <- c(tags, tag_down1)
+    if(g %in% down2) tags <- c(tags, tag_down2)
+    if(g %in% up1)   tags <- c(tags, tag_up1)
+    if(g %in% up2)   tags <- c(tags, tag_up2)
+    if(length(tags)==0) tags <- "Cdc42"
+    paste(tags, collapse = "_")
+  }, USE.NAMES = FALSE)
+}
+# load files PD ----
+# Base directory containing the Excel files
+combined_dir <- "dir with all differential analysis sheets"
+
+# List all Excel files in the "combined" subdirectory
+all_files <- list.files(path = combined_dir, pattern = "\\.xlsx$", full.names = FALSE)
+
+# Extract the cell type from each file name assuming it is the part before the first underscore
+extracted_types <- sub("_.*", "", all_files)
+cell_types <- unique(extracted_types)
+cell_types <- cell_types[-which(cell_types %in% c("GABA Neuron", "Vglut1 Neuron", "Vglut2 Neuron"))]
+# Load the integrated Seurat object that contains all cell types
+seurat_integrated <- # seurat object
+
+for(cell_type in cell_types){
+  
+  
+  # Define file prefix for the current cell type.
+  # This assumes that file names start with the cell type.
+  file_prefix <- file.path(combined_dir, paste0(cell_type, "_"))
+  
+  # Read in the Excel files for each condition. The pattern here assumes the naming follows:
+  # <cell_type>_synON6M_NoCasin_vs_synOFF6M_NoCasin_sigRescombined.xlsx etc.
+  ON6M_noCasin <- read_xlsx(paste0(file_prefix, "synON6M_NoCasin_vs_synOFF6M_NoCasin_sigRescombined.xlsx"))
+  ON16M_noCasin <- read_xlsx(paste0(file_prefix, "synON16M_NoCasin_vs_synOFF16M_NoCasin_sigRescombined.xlsx"))
+  ON24M_noCasin <- read_xlsx(paste0(file_prefix, "synON24M_NoCasin_vs_synOFF24M_NoCasin_sigRescombined.xlsx"))
+  
+  ON24M_YesCasin <- read_xlsx(paste0(file_prefix, "synON24M_YesCasin_vs_synON24M_NoCasin_sigRescombined.xlsx"))
+  ON16M_YesCasin <- read_xlsx(paste0(file_prefix, "synON16M_YesCasin_vs_synON16M_NoCasin_sigRescombined.xlsx"))
+  ON6M_YesCasin <- read_xlsx(paste0(file_prefix, "synON6M_YesCasin_vs_synON6M_NoCasin_sigRescombined.xlsx"))
+  
+  ON24M_YesCasin_allres <- read_xlsx(paste0(file_prefix, "synON24M_YesCasin_vs_synON24M_NoCasin_allRescombined.xlsx"))
+  ON16M_YesCasin_allres <- read_xlsx(paste0(file_prefix, "synON16M_YesCasin_vs_synON16M_NoCasin_allRescombined.xlsx"))
+  ON6M_YesCasin_allres <- read_xlsx(paste0(file_prefix, "synON6M_YesCasin_vs_synON6M_NoCasin_allRescombined.xlsx"))
+  
+  # Calculate intersections and unions of gene sets as before
+  pdSign_intersect <- c(
+    intersect(ON24M_noCasin$gene[ON24M_noCasin$mean_log2FoldChange > 0],
+              ON16M_noCasin$gene[ON16M_noCasin$mean_log2FoldChange > 0]),
+    intersect(ON24M_noCasin$gene[ON24M_noCasin$mean_log2FoldChange < 0],
+              ON16M_noCasin$gene[ON16M_noCasin$mean_log2FoldChange < 0])
+  )
+  pdSign_union <- unique(c(ON16M_noCasin$gene, ON24M_noCasin$gene))
+  pdEarly <- intersect(pdSign_union, ON6M_noCasin$gene)
+  
+  casin24_intersect <- c(
+    intersect(ON24M_noCasin$gene[ON24M_noCasin$mean_log2FoldChange > 0],
+              ON24M_YesCasin$gene[ON24M_YesCasin$mean_log2FoldChange < 0]),
+    intersect(ON24M_noCasin$gene[ON24M_noCasin$mean_log2FoldChange < 0],
+              ON24M_YesCasin$gene[ON24M_YesCasin$mean_log2FoldChange > 0])
+  )
+  casin6_intersect <- c(
+    intersect(ON6M_noCasin$gene[ON6M_noCasin$mean_log2FoldChange > 0],
+              ON6M_YesCasin$gene[ON6M_YesCasin$mean_log2FoldChange < 0]),
+    intersect(ON6M_noCasin$gene[ON6M_noCasin$mean_log2FoldChange < 0],
+              ON6M_YesCasin$gene[ON6M_YesCasin$mean_log2FoldChange > 0])
+  )
+  casin16_intersect <- c(
+    intersect(ON16M_noCasin$gene[ON16M_noCasin$mean_log2FoldChange > 0],
+              ON16M_YesCasin$gene[ON16M_YesCasin$mean_log2FoldChange < 0]),
+    intersect(ON16M_noCasin$gene[ON16M_noCasin$mean_log2FoldChange < 0],
+              ON16M_YesCasin$gene[ON16M_YesCasin$mean_log2FoldChange > 0])
+  )
+  
+  # Build a list of gene sets, adding "Cdc42" as in the original code
+  Casin_genes_list <- list(
+    ON24M_noCasin = c(ON24M_noCasin$gene, "Cdc42"),
+    ON24M_yesCasin = c(ON24M_YesCasin$gene, "Cdc42"),
+    ON24M_CasinIntersect = c(casin24_intersect, "Cdc42"),
+    ON16M_noCasin = c(ON16M_noCasin$gene, "Cdc42"),
+    ON16M_yesCasin = c(ON16M_YesCasin$gene, "Cdc42"),
+    ON16M_CasinIntersect = c(casin16_intersect, "Cdc42"),
+    ON6M_noCasin = c(ON6M_noCasin$gene, "Cdc42"),
+    ON6M_yesCasin = c(ON6M_YesCasin$gene, "Cdc42"),
+    ON6M_CasinIntersect = c(casin6_intersect, "Cdc42")
+  )
+  
+  for(cell_type2 in cell_types){
+    
+    # Subset the integrated Seurat object for the current cell type.
+    # (Replace 'celltype' with the actual metadata column that defines your cell types.)
+    seurat_sub <- subset(seurat_integrated, CellLevel2 == cell_type2)
+    # Process the Seurat subset object for the current cell type
+    counts <- as.matrix(GetAssayData(seurat_sub, slot = "data"))
+    metadata <- seurat_sub@meta.data
+    mm <- model.matrix(~ condition, metadata)
+    mat <- limma::removeBatchEffect(counts, batch = metadata$sexBackup, batch2 = metadata$batch, design = mm)
+    
+    # Subset counts for each condition (adjust condition names if needed)
+    ON24MCasin_count <- mat[, colnames(mat) %in% metadata$cells[metadata$condition == "synON24M_YesCasin"]]
+    ON24M_count <- mat[, colnames(mat) %in% metadata$cells[metadata$condition == "synON24M_NoCasin"]]
+    ON16MCasin_count <- mat[, colnames(mat) %in% metadata$cells[metadata$condition == "synON16M_YesCasin"]]
+    ON16M_count <- mat[, colnames(mat) %in% metadata$cells[metadata$condition == "synON16M_NoCasin"]]
+    ON6MCasin_count <- mat[, colnames(mat) %in% metadata$cells[metadata$condition == "synON6M_YesCasin"]]
+    ON6M_count <- mat[, colnames(mat) %in% metadata$cells[metadata$condition == "synON6M_NoCasin"]]
+    
+    # Loop over each gene set and write out the count tables.
+    for(i in seq_along(Casin_genes_list)){
+      geneSet <- Casin_genes_list[[i]]
+      geneSet_name <- names(Casin_genes_list)[i]
+      
+      ON24MCasin_count_sub <- ON24MCasin_count[geneSet, , drop = FALSE]
+      ON24MCasin_count_table <- rbind(colnames(ON24MCasin_count_sub), ON24MCasin_count_sub)
+      ON24M_count_sub <- ON24M_count[geneSet, , drop = FALSE]
+      ON24M_count_table <- rbind(colnames(ON24M_count_sub), ON24M_count_sub)
+      
+      ON16MCasin_count_sub <- ON16MCasin_count[geneSet, , drop = FALSE]
+      ON16MCasin_count_table <- rbind(colnames(ON16MCasin_count_sub), ON16MCasin_count_sub)
+      ON16M_count_sub <- ON16M_count[geneSet, , drop = FALSE]
+      ON16M_count_table <- rbind(colnames(ON16M_count_sub), ON16M_count_sub)
+      
+      ON6MCasin_count_sub <- ON6MCasin_count[geneSet, , drop = FALSE]
+      ON6MCasin_count_table <- rbind(colnames(ON6MCasin_count_sub), ON6MCasin_count_sub)
+      ON6M_count_sub <- ON6M_count[geneSet, , drop = FALSE]
+      ON6M_count_table <- rbind(colnames(ON6M_count_sub), ON6M_count_sub)
+      
+      # Write out the tables with the cell type incorporated into the filename
+      write.table(ON24MCasin_count_table,
+                  file = paste0("output path",
+                                cell_type, "_ON24MCasin_count_target",cell_type2,"_", geneSet_name, ".txt"),
+                  sep = "\t", row.names = TRUE, col.names = FALSE)
+      write.table(ON24M_count_table,
+                  file = paste0("output path",
+                                cell_type, "_ON24M_count_target",cell_type2,"_", geneSet_name, ".txt"),
+                  sep = "\t", row.names = TRUE, col.names = FALSE)
+      
+      write.table(ON16MCasin_count_table,
+                  file = paste0("output path",
+                                cell_type, "_ON16MCasin_count_target",cell_type2,"_", geneSet_name, ".txt"),
+                  sep = "\t", row.names = TRUE, col.names = FALSE)
+      write.table(ON16M_count_table,
+                  file = paste0("output path",
+                                cell_type, "_ON16M_count_target",cell_type2,"_", geneSet_name, ".txt"),
+                  sep = "\t", row.names = TRUE, col.names = FALSE)
+      
+      write.table(ON6MCasin_count_table,
+                  file = paste0("output path",
+                                cell_type, "_ON6MCasin_count_target",cell_type2,"_", geneSet_name, ".txt"),
+                  sep = "\t", row.names = TRUE, col.names = FALSE)
+      write.table(ON6M_count_table,
+                  file = paste0("output path",
+                                cell_type, "_ON6M_count_target",cell_type2,"_", geneSet_name, ".txt"),
+                  sep = "\t", row.names = TRUE, col.names = FALSE)
+    }
+  }
+  
+}
+
+# Graphs from PIDC all ----
+## PIDC have to be run via JULIA before this step ##
+mouse = 10090
+allNetwork <- import_all_interactions(organism = mouse)
+allNetwork_RNA <- dplyr::filter(allNetwork, type == "transcriptional")
+indir <- "dir with PIDC output files"
+conditions <- gsub("\\.csv$", "", list.files(path = indir, pattern = "*.csv", full.names = FALSE)) # if just doing it for all files
+graph_list <- list()
+plotting = TRUE
+for (err_cond in conditions){
+  adj_matrix <- read.csv(paste0(indir,err_cond,".csv"), header = TRUE)
+  err_cond_name <- gsub("Oligodendrocyte_Astrocyte_","",err_cond)
+  if(!all(adj_matrix == "false")){
+    rownames(adj_matrix) <- colnames(adj_matrix)
+    adj_matrix[adj_matrix == "true"] <- 1
+    adj_matrix[adj_matrix == "false"] <- 0
+    rownames(adj_matrix) <- colnames(adj_matrix)
+    g_topic <- graph_from_adjacency_matrix(as.matrix(adj_matrix), mode = "directed", diag = FALSE)
+    V(g_topic)$type <- ifelse(V(g_topic)$name %in% c(allNetwork_RNA$source_genesymbol, "V1S_SV2"), "TF", "gene")
+    
+    g_topic <- delete.vertices(g_topic, which(igraph::degree(g_topic)==0))
+    centrality_df <- data.frame(
+      gene = V(g_topic)$name,
+      degree = igraph::degree(g_topic),
+      eigen = evcent(g_topic)$vector,
+      betweenness = betweenness(g_topic, directed = FALSE)
+    )
+    centrality_df$degree_rank <- rank(-centrality_df$degree, ties.method = "min")
+    centrality_df$eigen_rank <- rank(-centrality_df$eigen, ties.method = "min")
+    centrality_df$betweenness_rank <- rank(-centrality_df$betweenness, ties.method = "min")
+    centrality_df$centrality <- rowMeans(centrality_df[,c("degree_rank", "eigen_rank", "betweenness_rank")])
+    
+    V(g_topic)$centrality <- centrality_df$centrality
+    
+    if(plotting == TRUE){
+      print(ggraph(g_topic) + 
+              geom_edge_link() + 
+              geom_node_point(aes(shape = type), size = 6) +  # Differentiating by shape
+              geom_node_label(aes(label = name,size = -log10(centrality), fill = -log10(centrality)), repel = FALSE, alpha = 0.7) +  # Adding node labels
+              theme_graph() + ggtitle(err_cond)+
+              labs(shape = "Type", size = "Centrality", fill = "Centrality")+
+              theme(text = element_text(family = "Times", size = 15), 
+                    plot.title = element_text(family = "Times", size = 15)) + ggtitle(err_cond_name))  # Updating legend title for shape
+      print(ggraph(g_topic) + 
+              geom_edge_link() + 
+              geom_node_point(aes(shape = type), size = 6) +  # Differentiating by shape
+              geom_node_label(aes(label = name), repel = FALSE, alpha = 0.7) +  # Adding node labels
+              theme_graph() + ggtitle(err_cond)+
+              labs(shape = "Type",  fill = "Centrality")+
+              theme(text = element_text(family = "Times", size = 15), 
+                    plot.title = element_text(family = "Times", size = 15))+ ggtitle(err_cond_name))  # Updating legend title for shape
+      
+    }
+    
+    graph_list[[err_cond_name]] <- g_topic
+  }
+}
+
+
+
+
+# PIDC, decoupleR and omnipath and STRING GABA-Rgs9 PathoAgeSplit ----
+mouse = 10090
+string_db <- STRINGdb$new(species=mouse,score_threshold=600, network_type="full", input_directory="")
+combinedProteinRNA_df <- #omnipath proteinRNA
+PIDC_list <- # /Objects/PIDC_list
+PIDC_list_rel <- list(
+  ON24Casin_5perct_CasinPD = PIDC_list$`GABA_Rgs9_ON24MCasin_count_targetGABA-Rgs9_CasinPD_adjMatrix`, 
+  ON24_5perct_CasinPD = PIDC_list$`GABA_Rgs9_ON24M_count_targetGABA-Rgs9_CasinPD_adjMatrix`,
+  OFF24_5perct_CasinPD = PIDC_list$`GABA_Rgs9_OFF24M_count_targetGABA-Rgs9_CasinPD_adjMatrix`,
+  OFF24_5perct_AgePD = PIDC_list$`GABA_Rgs9_OFF24M_count_targetGABA-Rgs9_CasinAge_adjMatrix`,
+  OFF24Casin_5perct_AgePD = PIDC_list$`GABA_Rgs9_OFF24MCasin_count_targetGABA-Rgs9_CasinAge_adjMatrix`,
+  ON24Casin_5perct_AgePD = PIDC_list$`GABA_Rgs9_ON24MCasin_count_targetGABA-Rgs9_CasinAge_adjMatrix`,
+  ON24_5perct_AgePD = PIDC_list$`GABA_Rgs9_ON24M_count_targetGABA-Rgs9_CasinAge_adjMatrix`,
+  OFF6_5perct_AgePD = PIDC_list$`GABA_Rgs9_OFF6M_count_targetGABA-Rgs9_CasinAge_adjMatrix`,
+  OFF16_5perct_AgePD = PIDC_list$`GABA_Rgs9_OFF16M_count_targetGABA-Rgs9_CasinAge_adjMatrix`,
+  OFF16Casin_5perct_AgePD = PIDC_list$`GABA_Rgs9_OFF16MCasin_count_targetGABA-Rgs9_CasinAge_adjMatrix`
+)
+
+edges_df <- igraph::as_data_frame(PIDC_list_rel$ON24Casin_5perct_CasinPD, what = "edges")
+
+
+PIDC_list_rel <- list(
+  ON24Casin_5perct_CasinPD_Rorb = PIDC_list$`GABA_Rgs9_ON24MCasin_count_targetVglut1-Rorb_CasinPD_adjMatrix`, 
+  ON24_5perct_CasinPD_Rorb = PIDC_list$`GABA_Rgs9_ON24M_count_targetVglut1-Rorb_CasinPD_adjMatrix`,
+  OFF24_5perct_CasinPD_Rorb = PIDC_list$`GABA_Rgs9_OFF24M_count_targetVglut1-Rorb_CasinPD_adjMatrix`,
+  ON24Casin_5perct_CasinPD_Foxp2 = PIDC_list$`GABA_Rgs9_ON24MCasin_count_targetVglut1-Foxp2_CasinPD_adjMatrix`, 
+  ON24_5perct_CasinPD_Foxp2 = PIDC_list$`GABA_Rgs9_ON24M_count_targetVglut1-Foxp2_CasinPD_adjMatrix`,
+  OFF24_5perct_CasinPD_Foxp2 = PIDC_list$`GABA_Rgs9_OFF24M_count_targetVglut1-Foxp2_CasinPD_adjMatrix`,
+  ON24Casin_5perct_CasinPD_Bmpr1b = PIDC_list$`GABA_Rgs9_ON24MCasin_count_targetVglut1-Bmpr1b_CasinPD_adjMatrix`, 
+  ON24_5perct_CasinPD_Bmpr1b = PIDC_list$`GABA_Rgs9_ON24M_count_targetVglut1-Bmpr1b_CasinPD_adjMatrix`,
+  OFF24_5perct_CasinPD_Bmpr1b = PIDC_list$`GABA_Rgs9_OFF24M_count_targetVglut1-Bmpr1b_CasinPD_adjMatrix`,
+  ON24Casin_5perct_CasinPD_Col19a1 = PIDC_list$`GABA_Rgs9_ON24MCasin_count_targetVglut1-Col19a1_CasinPD_adjMatrix`, 
+  ON24_5perct_CasinPD_Col19a1 = PIDC_list$`GABA_Rgs9_ON24M_count_targetVglut1-Col19a1_CasinPD_adjMatrix`,
+  OFF24_5perct_CasinPD_Col19a1 = PIDC_list$`GABA_Rgs9_OFF24M_count_targetVglut1-Col19a1_CasinPD_adjMatrix`
+)
+
+PIDC_list_rel <- list(
+  ON24Casin_5perct_CasinPD_GABA_Sst = PIDC_list$`GABA_Rgs9_ON24MCasin_count_targetGABA-Sst_CasinPD_adjMatrix`, 
+  ON24_5perct_CasinPD_GABA_Sst= PIDC_list$`GABA_Rgs9_ON24M_count_targetGABA-Sst_CasinPD_adjMatrix`,
+  OFF24_5perct_CasinPD_GABA_Sst = PIDC_list$`GABA_Rgs9_OFF24M_count_targetGABA-Sst_CasinPD_adjMatrix`,
+  ON24Casin_5perct_CasinPD_GABA_Cemip = PIDC_list$`GABA_Rgs9_ON24MCasin_count_targetGABA-Cemip_CasinPD_adjMatrix`, 
+  ON24_5perct_CasinPD_GABA_Cemip = PIDC_list$`GABA_Rgs9_ON24M_count_targetGABA-Cemip_CasinPD_adjMatrix`,
+  OFF24_5perct_CasinPD_GABA_Cemip = PIDC_list$`GABA_Rgs9_OFF24M_count_targetGABA-Cemip_CasinPD_adjMatrix`,
+  ON24Casin_5perct_CasinPD_GABA_Rmst_Tshz2 = PIDC_list$`GABA_Rgs9_ON24MCasin_count_targetGABA-Rmst-Tshz2_CasinPD_adjMatrix`, 
+  ON24_5perct_CasinPD_GABA_Rmst_Tshz2 = PIDC_list$`GABA_Rgs9_ON24M_count_targetGABA-Rmst-Tshz2_CasinPD_adjMatrix`,
+  OFF24_5perct_CasinPD_GABA_Rmst_Tshz2 = PIDC_list$`GABA_Rgs9_OFF24M_count_targetGABA-Rmst-Tshz2_CasinPD_adjMatrix`,
+  ON24Casin_5perct_CasinPD_Vglut2_Nova1 = PIDC_list$`GABA_Rgs9_ON24MCasin_count_targetVglut2-Nova1_CasinPD_adjMatrix`, 
+  ON24_5perct_CasinPD_Vglut2_Nova1 = PIDC_list$`GABA_Rgs9_ON24M_count_targetVglut2-Nova1_CasinPD_adjMatrix`,
+  OFF24_5perct_CasinPD_Vglut2_Nova1 = PIDC_list$`GABA_Rgs9_OFF24M_count_targetVglut2-Nova1_CasinPD_adjMatrix`
+  
+)
+
+STRING_Cdc42_df <- get_STRING_dataframe(string_db = string_db, geneSet = "Cdc42")
+STRING_Cdc42_df_filtered <- anti_join(STRING_Cdc42_df, combinedProteinRNA_df, 
+                                      by = c("source_genesymbol" = "source_genesymbol", 
+                                             "target_genesymbol" = "target_genesymbol"))
+
+# Combine database interactions and fill missing values
+database_Cdc42_df <- rbind(combinedProteinRNA_df, STRING_Cdc42_df_filtered)
+database_Cdc42_df$consensus_stimulation[is.na(database_Cdc42_df$consensus_stimulation)] <- 0
+database_Cdc42_df$consensus_inhibition[is.na(database_Cdc42_df$consensus_inhibition)] <- 0
+database_Cdc42_df <- database_Cdc42_df[which(database_Cdc42_df$source_genesymbol == "Cdc42" |database_Cdc42_df$target_genesymbol == "Cdc42"),]
+
+tf_BGN <- qs_read("/home/jaehyun/Bioinformatic_Data/RDS/SingleCell/LuciCasinVerena_mice/decoupleR/GABA-Rgs9_PD_Age_Casin_onlySig.qs2")
+tf_24MON_noCasin <- tf_BGN$ON24M_NoCasin
+tf_24MON_Casin <- tf_BGN$ON24M_YesCasin[which(tf_BGN$ON24M_YesCasin$sig == "Yes"),]
+tf_24MON_CasinPD <- intersect(c(intersect(tf_24MON_noCasin$source[which(tf_24MON_noCasin$score > 0)],tf_24MON_Casin$source[which(tf_24MON_Casin$score < 0)]),
+                                intersect(tf_24MON_noCasin$source[which(tf_24MON_noCasin$score < 0)],tf_24MON_Casin$source[which(tf_24MON_Casin$score > 0)])),
+                              unique(c(database_Cdc42_df$source_genesymbol,database_Cdc42_df$target_genesymbol)))
+
+tf_24MOFF_noCasin <- tf_BGN$OFF24M_NoCasin
+tf_24MOFF_Casin <- tf_BGN$OFF24M_YesCasin[which(tf_BGN$OFF24M_YesCasin$sig == "Yes"),]
+tf_24MOFF_CasinAge <- intersect(c(intersect(tf_24MOFF_noCasin$source[which(tf_24MOFF_noCasin$score > 0)],tf_24MOFF_Casin$source[which(tf_24MOFF_Casin$score < 0)]),
+                                  intersect(tf_24MOFF_noCasin$source[which(tf_24MOFF_noCasin$score < 0)],tf_24MOFF_Casin$source[which(tf_24MOFF_Casin$score > 0)])),
+                                unique(c(database_Cdc42_df$source_genesymbol,database_Cdc42_df$target_genesymbol)))
+
+
+tf_16MOFF_noCasin <- tf_BGN$OFF16M_NoCasin
+tf_16MOFF_Casin <- tf_BGN$OFF16M_YesCasin[which(tf_BGN$OFF16M_YesCasin$sig == "Yes"),]
+tf_16MOFF_CasinAge <- intersect(c(intersect(tf_16MOFF_noCasin$source[which(tf_16MOFF_noCasin$score > 0)],tf_16MOFF_Casin$source[which(tf_16MOFF_Casin$score < 0)]),
+                                  intersect(tf_16MOFF_noCasin$source[which(tf_16MOFF_noCasin$score < 0)],tf_16MOFF_Casin$source[which(tf_16MOFF_Casin$score > 0)])),
+                                unique(c(database_Cdc42_df$source_genesymbol,database_Cdc42_df$target_genesymbol)))
+
+
+# get interactions that are in PIDC and retraceable by databases with 0 bridges
+
+new_PIDC_list <- list()
+edges_list <- list()
+
+# Loop over each PIDC network subset
+for (i in seq_along(PIDC_list_rel)){
+  
+  PIDC_graph <- PIDC_list_rel[[i]]
+  setName <- names(PIDC_list_rel)[i]
+  plotTitle <- paste0("PIDC-DB: ", setName)
+  
+  # Extract edges from the PIDC graph
+  edges  <- igraph::as_data_frame(PIDC_graph, what = "edges")
+  
+  # Build the initial gene set from PIDC genes
+  geneSet <- unique(c(edges$from, edges$to))
+  
+  # Select the appropriate TF genes based on setName
+  if(setName %in% c("ON24Casin_5perct_CasinPD", "ON24_5perct_CasinPD", "OFF24_5perct_CasinPD")){
+    tf_genes <- tf_24MON_CasinPD
+  } else if(setName %in% c("OFF24Casin_5perct_AgePD", "OFF24_5perct_AgePD", "ON24Casin_5perct_AgePD", "ON24_5perct_AgePD")){
+    tf_genes <- tf_24MOFF_CasinAge
+  }else{
+    tf_genes <- tf_16MOFF_CasinAge
+  }
+  
+  ## remove if not using only 24M PD related tfs
+  #tf_genes <- intersect(tf_24MON_Casin,tf_24MON_noCasin)
+  
+  # Combine PIDC genes with TF genes
+  geneSet <- unique(c(geneSet, tf_genes))
+  # Always include "Cdc42"
+  if (!('Cdc42' %in% geneSet)){
+    geneSet <- c(geneSet, 'Cdc42')
+  }
+  
+  # Get STRING interactions for the full gene set
+  STRING_rows_df <- get_STRING_dataframe(string_db = string_db, geneSet = geneSet)
+  STRING_rows_df_filtered <- anti_join(STRING_rows_df, combinedProteinRNA_df, 
+                                       by = c("source_genesymbol" = "source_genesymbol", 
+                                              "target_genesymbol" = "target_genesymbol"))
+  
+  # Combine database interactions and fill missing values
+  database <- rbind(combinedProteinRNA_df, STRING_rows_df_filtered)
+  database$consensus_stimulation[is.na(database$consensus_stimulation)] <- 0
+  database$consensus_inhibition[is.na(database$consensus_inhibition)] <- 0
+  
+  # Build the full interaction graph from the database
+  g <- interaction_graph(interactions = database)
+  
+  # Ensure "Cdc42" is present in PIDC_graph
+  if (!('Cdc42' %in% V(PIDC_graph)$name)){
+    PIDC_graph <- add_vertices(PIDC_graph, 1, name='Cdc42')
+  }
+  # Ensure tf genes is present in PIDC_graph
+  tf_genes_missing <- setdiff(tf_genes, V(PIDC_graph)$name)
+  if(length(tf_genes_missing) > 0){
+    PIDC_graph <- add_vertices(PIDC_graph, nv = length(tf_genes_missing), name=tf_genes_missing)
+  }
+  
+  
+  # Set vertex attributes: label "Cdc42", "TF" or "Original"
+  V(PIDC_graph)$gene_type <- NA
+  V(PIDC_graph)$gene_type[V(PIDC_graph)$name == 'Cdc42'] <- 'Cdc42'
+  V(PIDC_graph)$gene_type[V(PIDC_graph)$name %in% tf_genes] <- 'TF'
+  V(PIDC_graph)$gene_type[is.na(V(PIDC_graph)$gene_type)] <- 'Original'
+  
+  # (A) Update Existing PIDC Edges with Adjusted Distance Calculation
+  # Initialize columns for adjusted bridge count and the vertex path
+  edges$nbridge <- NA
+  edges$v_dist <- NA
+  
+  for (j in 1:nrow(edges)) {
+    from_node <- edges$from[j]
+    to_node <- edges$to[j]
+    
+    if (from_node %in% V(g)$name && to_node %in% V(g)$name) {
+      sp <- shortest_paths(g, from = from_node, to = to_node, mode='all', output = "vpath")
+      vpath <- names(sp$vpath[[1]])
+      
+      # Identify intermediate nodes (if any)
+      if(length(vpath) > 2){
+        intermediate <- vpath[2:(length(vpath)-1)]
+      } else {
+        intermediate <- character(0)
+      }
+      # Exclude any intermediate node that is a TF gene or "Cdc42"
+      intermediate_filtered <- setdiff(intermediate, c(tf_genes, "Cdc42"))
+      new_dist <- length(intermediate_filtered)
+      
+      edges$v_dist[j] <- paste(vpath, collapse = ", ")
+      edges$nbridge[j] <- new_dist
+    } else {
+      edges$nbridge[j] <- 100
+    }
+  }
+  
+  # Label the edge as Found if no non-key (bridge) gene is needed
+  edges$db_found <- ifelse(edges$nbridge == 0, "Found", "NotFound")
+  
+  # Update the PIDC_graph edges with the dbFound attribute
+  for (j in 1:nrow(edges)) {
+    from_node <- edges$from[j]
+    to_node <- edges$to[j]
+    
+    edge_id <- get.edge.ids(PIDC_graph, c(from_node, to_node))
+    if (edge_id > 0) {
+      PIDC_graph <- set_edge_attr(PIDC_graph, "dbFound", index = edge_id, value = edges$db_found[j])
+    }
+  }
+  
+  # (B) Connect Key Genes (TFs and Cdc42) to Other Genes Using the Database
+  # Define key genes as the union of TF genes and "Cdc42"
+  key_genes <- unique(c("Cdc42", tf_genes))
+  # Initialize a dataframe to record newly added edges
+  new_edges <- data.frame(from=character(), to=character(), nbridge=integer(), v_dist=character(), db_found=character(), stringsAsFactors=FALSE)
+  
+  # For each key gene, check connectivity to every other gene in the PIDC graph
+  for (source_gene in key_genes) {
+    for (target_gene in setdiff(V(PIDC_graph)$name, source_gene)) {
+      if (source_gene %in% V(g)$name && target_gene %in% V(g)$name) {
+        sp <- shortest_paths(g, from=source_gene, to=target_gene, mode='all', output='vpath')
+        vpath <- V(g)[sp$vpath[[1]]]$name
+        if (length(vpath) < 2) next  # Skip if no valid path exists
+        
+        # Identify intermediate nodes and filter out key genes
+        if(length(vpath) > 2){
+          intermediate <- vpath[2:(length(vpath)-1)]
+        } else {
+          intermediate <- character(0)
+        }
+        intermediate_filtered <- setdiff(intermediate, key_genes)
+        new_dist <- length(intermediate_filtered)
+        
+        # Only add the connection if no non-key bridge is needed
+        if (is.finite(new_dist) && new_dist == 0) {
+          if (!are.connected(PIDC_graph, source_gene, target_gene)) {
+            PIDC_graph <- add_edges(PIDC_graph, c(source_gene, target_gene))
+          }
+          edge_id <- get.edge.ids(PIDC_graph, c(source_gene, target_gene))
+          PIDC_graph <- set_edge_attr(PIDC_graph, "dbFound", index = edge_id, value='Found')
+          
+          # Record this new connection
+          new_edges <- rbind(new_edges, data.frame(
+            from=source_gene, to=target_gene, nbridge=new_dist,
+            v_dist=paste(vpath, collapse=', '), db_found='Found', stringsAsFactors=FALSE
+          ))
+        }
+      }
+    }
+  }
+  
+  # Merge the new edges with the previously computed ones
+  edges <- rbind(edges, new_edges)
+  
+  # Create a layout for plotting the graph
+  layout <- create_layout(PIDC_graph, layout = "fr")
+  new_PIDC_list[[setName]] <- PIDC_graph
+  edges_list[[setName]] <- edges
+  
+  # Plot the graph using ggraph with updated aesthetics
+  print(ggraph(layout) + 
+          geom_edge_link(aes(color = factor(dbFound), start_cap = label_rect(node1.name),
+                             end_cap = label_rect(node2.name)), 
+                         arrow = arrow(type = "closed", length = unit(4, "mm"))) +
+          geom_node_label(aes(label = name, fill=gene_type), size = 5, repel = FALSE, alpha = 0.6) +
+          scale_fill_manual(values = c('Cdc42'='yellow', 'TF'='purple', 'Original'='blue'), name='Gene Type') +
+          scale_edge_color_manual(values = c("Found" = "green", "NotFound" = "red"),
+                                  name = "dbFound") +
+          theme_graph() + 
+          ggtitle(plotTitle) +
+          theme(text = element_text(family = "Times", size = 15), 
+                plot.title = element_text(family = "Times", size = 20)))
+}
+
+# Cdc42 specific networks ----
+PIDC_list_labelled <- new_PIDC_list
+
+ON24M_Casin <- PIDC_list_labelled$ON24Casin_5perct_CasinPD
+ON24M_NoCasin <- PIDC_list_labelled$ON24_5perct_CasinPD
+OFF24M_NoCasin <- PIDC_list_labelled$OFF24_5perct_CasinPD
+
+dist_val <- 1
+
+OFF24M_NoCasin_sub <- subset_cdc42_graph_by_distance(
+  graph   = OFF24M_NoCasin,
+  center  = "Cdc42",
+  distance = dist_val
+)
+OFF24M_NoCasin_sub_found <- delete.edges(OFF24M_NoCasin_sub,  E(OFF24M_NoCasin_sub)[which(E(OFF24M_NoCasin_sub)$dbFound == "NotFound")]) 
+OFF24M_NoCasin_sub_found <- delete.vertices(OFF24M_NoCasin_sub_found,  V(OFF24M_NoCasin_sub_found)[igraph::degree(OFF24M_NoCasin_sub_found) == 0])
+
+
+ON24M_Casin_sub <- subset_cdc42_graph_by_distance(
+  graph   = ON24M_Casin,
+  center  = "Cdc42",
+  distance = dist_val
+)
+ON24M_Casin_sub_found <- delete.edges(ON24M_Casin_sub,  E(ON24M_Casin_sub)[which(E(ON24M_Casin_sub)$dbFound == "NotFound")]) 
+ON24M_Casin_sub_found <- delete.vertices(ON24M_Casin_sub_found,  V(ON24M_Casin_sub_found)[igraph::degree(ON24M_Casin_sub_found) == 0])
+
+ON24M_NoCasin_sub <- subset_cdc42_graph_by_distance(
+  graph   = ON24M_NoCasin,
+  center  = "Cdc42",
+  distance = dist_val
+)
+ON24M_NoCasin_sub_found <- delete.edges(ON24M_NoCasin_sub,  E(ON24M_NoCasin_sub)[which(E(ON24M_NoCasin_sub)$dbFound == "NotFound")]) 
+ON24M_NoCasin_sub_found <- delete.vertices(ON24M_NoCasin_sub_found,  V(ON24M_NoCasin_sub_found)[igraph::degree(ON24M_NoCasin_sub_found) == 0])
+
+## plotting
+PIDC <- ON24M_Casin_sub
+layout <- create_layout(PIDC, layout = "stress")
+
+print(ggraph(layout) + 
+        geom_edge_link(aes(color = factor(dbFound), start_cap = label_rect(node1.name),
+                           end_cap = label_rect(node2.name)), 
+                       arrow = arrow(type = "closed", length = unit(4, "mm"))) +
+        geom_node_label(aes(label = name, fill=gene_type), size = 5, repel = FALSE, alpha = 0.6) +
+        scale_fill_manual(values = c('Cdc42'='yellow', 'TF'='purple', 'Original'='blue'), name='Gene Type') +
+        scale_edge_color_manual(values = c("Found" = "green", "NotFound" = "red"),
+                                name = "dbFound") +
+        theme_graph() + 
+        theme(text = element_text(family = "Times", size = 15), 
+              plot.title = element_text(family = "Times", size = 20)))
+
+## this only after comparing Casin and NoCasin was done
+print(ggraph(layout) + 
+        geom_edge_link(aes(color = factor(CasinEffect), start_cap = label_rect(node1.name),
+                           end_cap = label_rect(node2.name)), 
+                       arrow = arrow(type = "closed", length = unit(4, "mm"))) +
+        geom_node_label(aes(label = name, fill=gene_type), size = 5, repel = FALSE, alpha = 0.6) +
+        scale_fill_manual(values = c('Cdc42'='yellow', 'TF'='purple', 'Original'='blue'), name='Gene Type') +
+        scale_edge_color_manual(values = c("Unchanged" = "black", "Loss" = "red", "Gain" = "blue"),
+                                name = "CasinEffect") +
+        theme_graph() + 
+        theme(text = element_text(family = "Times", size = 15), 
+              plot.title = element_text(family = "Times", size = 20)))
+
+## as for looop
+pidc_new_list <- list()
+
+dist_val <- 1
+for (i in seq_along(PIDC_list_labelled)){
+  PIDC <- PIDC_list_labelled[[i]]
+  PIDC_name <- names(PIDC_list_labelled)[i]
+  
+  PIDC_sub <- subset_cdc42_graph_by_distance(
+    graph   = PIDC,
+    center  = "Cdc42",
+    distance = dist_val
+  )
+  
+  pidc_new_list[[PIDC_name]] <- PIDC_sub
+  
+  layout <- create_layout(PIDC_sub, layout = "stress")
+  
+  print(ggraph(layout) + 
+          geom_edge_link(aes(color = factor(dbFound), start_cap = label_rect(node1.name),
+                             end_cap = label_rect(node2.name)), 
+                         arrow = arrow(type = "closed", length = unit(4, "mm"))) +
+          geom_node_label(aes(label = name, fill=gene_type), size = 5, repel = FALSE, alpha = 0.6) +
+          scale_fill_manual(values = c('Cdc42'='yellow', 'TF'='purple', 'Original'='blue'), name='Gene Type') +
+          scale_edge_color_manual(values = c("Found" = "green", "NotFound" = "red"),
+                                  name = "dbFound") +
+          theme_graph() + 
+          theme(text = element_text(family = "Times", size = 15), 
+                plot.title = element_text(family = "Times", size = 20)) + ggtitle(PIDC_name))
+}
+
+PIDC_sub <- pidc_new_list$OFF24Casin_5perct_AgePD
+el <- ends(PIDC_sub, E(PIDC_sub), names = FALSE)
+tf_rows <- which(
+  V(PIDC_sub)$gene_type[ el[,1] ] == "TF" &
+    V(PIDC_sub)$gene_type[ el[,2] ] == "TF"
+)
+g_filtered <- delete_edges(PIDC_sub, E(PIDC_sub)[ tf_rows ])
+
+layout <- create_layout(g_filtered, layout = "stress")
+
+print(ggraph(layout) + 
+        geom_edge_link(aes(color = factor(dbFound), start_cap = label_rect(node1.name),
+                           end_cap = label_rect(node2.name)), 
+                       arrow = arrow(type = "closed", length = unit(4, "mm"))) +
+        geom_node_label(aes(label = name, fill=gene_type), size = 5, repel = FALSE, alpha = 1) +
+        scale_fill_manual(values = c('Cdc42'='yellow', 'TF'='purple', 'Original'='lightblue'), name='Gene Type') +
+        scale_edge_color_manual(values = c("Found" = "green", "NotFound" = "red"),
+                                name = "dbFound") +
+        theme_graph() + 
+        theme(text = element_text(family = "Times", size = 15), 
+              plot.title = element_text(family = "Times", size = 20)) + ggtitle(PIDC_name))
+
+edges <- igraph::as_data_frame(PIDC_sub, what = c("edges"))
+edges_sub <- edges[which(edges$from %in% tf_24MON_CasinPD | edges$to %in% tf_24MON_CasinPD),]
+edges_sub <- edges_sub[-which(edges_sub$from %in% "Cdc42" | edges_sub$to %in% "Cdc42"),]
+nrow(edges_sub[which(edges_sub$from %in% "Atf4"),])
+# adding pathway information ----
+pathway_relGenes_list <- # see Objects
+pidc_summary_list <- # see Objects
+new_PIDC_list <- # see Objects
+new_PIDC_list_Cdc42spec <- # see Objects
+mouse = 10090
+string_db <- STRINGdb$new(species=mouse,score_threshold=600, network_type="full", input_directory="")
+combinedProteinRNA_df <- # omnipath RNA Protein
+
+names(new_PIDC_list)
+int_Graph_names <- c("ON24Casin_5perct_CasinPD", "ON24_5perct_CasinPD","OFF24_5perct_CasinPD") # PD Casin
+int_Graph_names <- c("OFF16Casin_5perct_AgePD", "OFF16_5perct_AgePD","OFF6_5perct_AgePD") # Age Casin
+
+new_Graph_list <- list()
+dist_df_list <- list()
+
+## for each interesting igraph object in new_PIDC_list
+for(graph_name in int_Graph_names){
+  ## subset relevant igraph objects from new_PIDC_list and new_PIDC_list_Cdc42spec
+  int_graph <- new_PIDC_list[[graph_name]]
+  int_graph_Cdc42spec <- new_PIDC_list_Cdc42spec[[graph_name]] 
+  int_graph_Cdc42spec_new <- int_graph_Cdc42spec
+  
+  dist_df <- data.frame(
+    graph   = character(),
+    pathway = character(),
+    gene    = character(),
+    distance= numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  ## for each pathway
+  for (path_name in names(pathway_relGenes_list)) {
+    path_genes <- pathway_relGenes_list[[path_name]]
+    path_genes_int <- intersect(path_genes, V(int_graph)$name)
+    if (length(path_genes_int) == 0){## here we will add the check using STRING/omniPath i
+      STRING_df <- get_STRING_dataframe(string_db = string_db, geneSet = c(path_genes, V(int_graph_Cdc42spec)$name))
+      STRING_df_filtered <- anti_join(STRING_df, combinedProteinRNA_df, 
+                                      by = c("source_genesymbol" = "source_genesymbol", 
+                                             "target_genesymbol" = "target_genesymbol"))
+      
+      # Combine database interactions and fill missing values
+      database_df <- rbind(combinedProteinRNA_df, STRING_df_filtered)
+      database_df$consensus_stimulation[is.na(database_df$consensus_stimulation)] <- 0
+      database_df$consensus_inhibition[is.na(database_df$consensus_inhibition)] <- 0
+      database_df <- database_df[which(database_df$source_genesymbol %in% c(path_genes, V(int_graph_Cdc42spec)$name)|database_df$target_genesymbol %in% c(path_genes, V(int_graph_Cdc42spec)$name)),]
+      # build an undirected igraph from the df
+      db_graph <- graph_from_data_frame(
+        d    = database_df %>% dplyr::select(source_genesymbol, target_genesymbol),
+        directed = FALSE,
+        vertices = unique(c(database_df$source_genesymbol,
+                            database_df$target_genesymbol))
+      )
+      
+      # pre‐compute the “original” graph's node set in the db_graph
+      graph_nodes_in_db <- V(db_graph)[name %in% V(int_graph_Cdc42spec)$name]
+      
+      # for **each** pathway gene:
+      for (g in path_genes) {
+        if (!(g %in% V(db_graph)$name) || length(graph_nodes_in_db)==0) next
+        
+        # distances from g to every node that was in the original int_graph_Cdc42spec
+        dvec <- distances(
+          graph = db_graph,
+          v     = V(db_graph)[name == g],
+          to    = graph_nodes_in_db,
+          mode  = "all"
+        )[1, ]
+        
+        if (all(is.infinite(dvec))) next
+        min_d <- min(dvec, na.rm = TRUE)
+        
+        # record it just like in the else branch
+        dist_df <- rbind(dist_df, data.frame(
+          graph    = graph_name,
+          pathway  = path_name,
+          gene     = g,
+          distance = min_d,
+          stringsAsFactors = FALSE
+        ))
+        
+        # if that minimum distance is ≤2, pull in the actual shortest‐path
+        if (min_d <= 2) {
+          # pick the first (or any) target with that min distance
+          tgt <- names(dvec)[which.min(dvec)]
+          sp  <- shortest_paths(
+            graph  = db_graph,
+            from   = V(db_graph)[name == g],
+            to     = V(db_graph)[name == tgt],
+            mode   = "all",
+            output = "both"
+          )
+          
+          for (eid in sp$epath[[1]]) {
+            verts <- ends(db_graph, eid)
+            
+            # ensure those vertices exist in the Cdc42‐spec graph
+            for (vname in verts) {
+              if (!(vname %in% V(int_graph_Cdc42spec_new)$name)) {
+                int_graph_Cdc42spec_new <- add_vertices(
+                  int_graph_Cdc42spec_new, 1, name = vname
+                )
+              }
+            }
+            
+            # now add the edge if missing
+            v1 <- which(V(int_graph_Cdc42spec_new)$name == verts[1])
+            v2 <- which(V(int_graph_Cdc42spec_new)$name == verts[2])
+            if (!are.connected(int_graph_Cdc42spec_new, v1, v2)) {
+              attrs <- edge.attributes(db_graph, eid)
+              int_graph_Cdc42spec_new <- add_edges(
+                int_graph_Cdc42spec_new, c(v1, v2), attr = attrs
+              )
+            }
+          }
+        }
+      }
+      
+    }else{
+      # compute distances from each pathway gene to "Cdc42"
+      dmat <- distances(
+        graph = int_graph,
+        v     = V(int_graph)[name %in% path_genes_int],
+        to    = V(int_graph)[name == "Cdc42"],
+        mode  = "all"
+      )
+      
+      # flatten into a data.frame
+      tmp_df <- data.frame(
+        graph    = graph_name,
+        pathway  = path_name,
+        gene     = rownames(dmat),
+        distance = as.numeric(dmat[,1]),
+        stringsAsFactors = FALSE
+      )
+      
+      # bind to this graph's df
+      dist_df <- rbind(dist_df, tmp_df)
+      
+      ## save the edge from pathway gene to the bridge gene (or Cdc42)
+      gene_corrDist <- tmp_df$gene[which(tmp_df$distance <= 2)]
+      if (length(gene_corrDist) == 0) next
+      
+      # for each such gene, pull in the actual shortest‐path edges
+      for (g in gene_corrDist) {
+        sp <- shortest_paths(
+          graph  = int_graph,
+          from   = V(int_graph)[name == g],
+          to     = V(int_graph)[name == "Cdc42"],
+          mode   = "all",
+          output = "both"
+        )
+        edge_ids <- sp$epath[[1]]
+        
+        # walk each edge in that path
+        for (eid in edge_ids) {
+          # get the two endpoint names
+          verts <- ends(int_graph, eid)
+          
+          # ensure both vertices exist in the Cdc42‐spec graph
+          for (vname in verts) {
+            if (!(vname %in% V(int_graph_Cdc42spec_new)$name)) {
+              int_graph_Cdc42spec_new <- add_vertices(int_graph_Cdc42spec_new, 1, name = vname)
+            }
+          }
+          
+          # now add the edge (if missing), copying all attributes
+          v1 <- which(V(int_graph_Cdc42spec_new)$name == verts[1])
+          v2 <- which(V(int_graph_Cdc42spec_new)$name == verts[2])
+          if (!are.connected(int_graph_Cdc42spec_new, v1, v2)) {
+            attrs <- edge.attributes(int_graph, eid)
+            int_graph_Cdc42spec_new <- add_edges(
+              int_graph_Cdc42spec_new,
+              c(v1, v2),
+              attr = attrs
+            )
+          }
+        }
+      }
+    }
+    
+  } 
+  # save into your list
+  dist_df_list[[graph_name]] <- dist_df
+  new_Graph_list[[graph_name]]  <- int_graph_Cdc42spec_new
+}
+
+## using the new list and the summary_graph_list add the pathway information to the summary_graph_lists
+## add vertex attribute gene type to the new vertices
+new_Graph_list_added <- list()
+for (graph_name in names(new_Graph_list)) {
+  g <- new_Graph_list[[graph_name]]
+  
+  # find all vertices with NA gene_type
+  na_vs <- V(g)[is.na(gene_type)]
+  
+  # for each such gene, find which pathways it belongs to
+  for (v in na_vs) {
+    gene <- V(g)$name[v]
+    # find all pathway names that contain this gene
+    pths <- names(pathway_relGenes_list)[
+      vapply(pathway_relGenes_list, function(gs) gene %in% gs, logical(1))
+    ]
+    if (length(pths) > 0) {
+      # collapse multiple pathways with "_"
+      new_type <- paste(pths, collapse = "_")
+      g <- set_vertex_attr(g, "gene_type",
+                           index = which(V(g)$name == gene),
+                           value = new_type)
+    }else{
+      g <- set_vertex_attr(g, "gene_type",
+                           index = which(V(g)$name == gene),
+                           value = "Bridge")
+    }
+  }
+  
+  # put the updated graph back into the list
+  new_Graph_list_added[[graph_name]] <- g
+}
+
+layout <- create_layout(new_Graph_list_added$OFF6_5perct_AgePD, layout = "stress")
+#layout <- create_layout(new_PIDC_list$ON24Casin_5perct_CasinPD, layout = "stress")
+
+print(ggraph(layout) + 
+        geom_edge_link(aes(start_cap = label_rect(node1.name),
+                           end_cap = label_rect(node2.name)), 
+                       arrow = arrow(type = "closed", length = unit(4, "mm"))) +
+        geom_node_label(aes(label = name, fill=gene_type), size = 5, repel = FALSE, alpha = 0.6) +
+        scale_fill_manual(values = c('Cdc42'='yellow', 'TF'='purple', 'Original'='blue',
+                                     'Bridge' = "grey80", 'EGFR' = 'orange', 'p53'  = 'red',
+                                     'WNT' = 'green4', 'MAPK' = 'turquoise', 'PI3K' = 'pink',
+                                     'Hypoxia' = "khaki", 'NFkB' = "saddlebrown", 'VEGF' = "palegreen"), name='Gene Type') +
+        theme_graph() + 
+        theme(text = element_text(family = "Times", size = 15), 
+              plot.title = element_text(family = "Times", size = 20)))
+
+

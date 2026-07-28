@@ -1,0 +1,93 @@
+library(OmnipathR)
+library(igraph)
+library(dplyr)
+library(writexl)
+library(readxl)
+library(tidyr)
+library(readr)
+library(stringr)
+library(ggraph)
+
+OmnipathR::omnipath_cache_wipe()
+interactions <- omnipath_interactions(
+  organism = 9606,
+  datasets = c("omnipath", "pathwayextra", "kinaseextra")
+) %>%
+  dplyr::filter(consensus_direction == 1,
+                (consensus_stimulation == 1 | consensus_inhibition == 1),
+                # Exclude edges that are both stim and inhib (ambiguous)
+                !(consensus_stimulation == 1 & consensus_inhibition == 1)) %>%
+  mutate(sign = ifelse(consensus_stimulation == 1, 1L, -1L)) %>%
+  select(source = source_genesymbol,
+         target = target_genesymbol,
+         sign)
+
+
+url <- "https://archive.omnipathdb.org/omnipath_webservice_interactions__latest.tsv.gz"
+
+dest <- file.path(tempdir(), "omnipath_interactions_latest.tsv.gz")
+if (!file.exists(dest)) {
+  download.file(url, dest, mode = "wb")
+}
+
+interactions_raw <- read_tsv(dest, show_col_types = FALSE)
+
+interactions <- interactions_raw %>%
+  # Keep only the post-translational signaling datasets you wanted
+  dplyr::filter(omnipath == TRUE | pathwayextra == TRUE | kinaseextra == TRUE) %>%
+  # Human only (the dump is human; this is a safety filter if columns exist)
+  { if ("ncbi_tax_id_source" %in% names(.))
+    dplyr::filter(., ncbi_tax_id_source == 9606, ncbi_tax_id_target == 9606)
+    else . } %>%
+  dplyr::filter(consensus_direction == 1,
+                (consensus_stimulation == 1 | consensus_inhibition == 1),
+                !(consensus_stimulation == 1 & consensus_inhibition == 1)) %>%
+  mutate(sign = ifelse(consensus_stimulation == 1, 1L, -1L)) %>%
+  select(source = source_genesymbol,
+         target = target_genesymbol,
+         sign)
+g <- graph_from_data_frame(interactions, directed = TRUE)
+
+collectri_url <- "https://archive.omnipathdb.org/omnipath_webservice_interactions__latest.tsv.gz"
+# Same file - just filter to the collectri dataset flag
+collectri <- interactions_raw %>%
+  dplyr::filter(collectri == TRUE) %>%
+  dplyr::filter(consensus_direction == 1)
+
+tf_universe <- unique(collectri$source_genesymbol)
+
+seed <- "CDC42"
+target_tfs <- c("JUN", "SP1", "AR", "CREB1", "ESR1", "MYC")
+max_hops <- 2
+
+edge_df  <- igraph::as_data_frame(g, what = "edges")
+edge_key <- paste(edge_df$from, edge_df$to, sep = "->")
+edge_sign <- setNames(edge_df$sign, edge_key)
+
+signed_paths_to <- function(graph, from, to, cutoff) {
+  paths <- all_simple_paths(graph, from = from, to = to,
+                            mode = "out", cutoff = cutoff)
+  if (length(paths) == 0) return(NULL)
+  
+  do.call(rbind, lapply(paths, function(p) {
+    nodes <- names(p)
+    keys  <- paste(head(nodes, -1), tail(nodes, -1), sep = "->")
+    signs <- edge_sign[keys]
+    if (any(is.na(signs))) return(NULL)
+    path_sign <- prod(signs)
+    
+    data.frame(
+      target_TF        = to,
+      path_length      = length(nodes) - 1,
+      path             = paste(nodes, collapse = " -> "),
+      edge_signs       = paste(ifelse(signs == 1, "+", "-"), collapse = ""),
+      path_sign        = path_sign,
+      predicted_TF_dir = ifelse(-1 * path_sign == 1, "up", "down"),
+      stringsAsFactors = FALSE
+    )
+  }))
+}
+
+all_paths <- lapply(target_tfs, function(tf) {
+  signed_paths_to(g, seed, tf, cutoff = max_hops)
+}) %>% bind_rows()

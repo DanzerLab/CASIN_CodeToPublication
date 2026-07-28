@@ -1,0 +1,40 @@
+using Pkg
+Pkg.update()
+Pkg.add("NetworkInference")
+Pkg.add("GraphPlot")
+Pkg.add("Graphs")
+Pkg.add("Karnak")
+Pkg.add("ColorTypes")
+Pkg.add("CSV") 
+Pkg.add("DataFrames")
+Pkg.add("Glob")
+
+
+# Include packages
+using NetworkInference
+using Karnak
+using GraphPlot
+using Graphs
+using ColorTypes
+using CSV, DataFrames
+using Glob
+
+#5  Percent threshhold or other
+txt_files = glob("path to all the .txt files from R")
+threshold = 0.05
+algorithm = PIDCNetworkInference() 
+
+for file in txt_files
+    dataset_name = splitext(basename(file))[1]  # Extracts the file name without extension
+    @time genes = get_nodes(file);  # Assuming get_nodes can work with the full path
+    @time network = InferredNetwork(algorithm, genes);
+    adjacency_matrix, labels_to_ids, ids_to_labels = get_adjacency_matrix(network, threshold)
+    number_of_nodes = size(adjacency_matrix)[1]
+    nodelabels = []
+    for i in 1:number_of_nodes
+        push!(nodelabels, ids_to_labels[i])
+    end
+    df = DataFrame(adjacency_matrix, nodelabels)
+    output_filename = joinpath("./LuciCasin/humanPD/adjMatrix/5perct", "$(dataset_name)_adjMatrix.csv")  # Dynamically create file name
+    CSV.write(output_filename, df)
+end

@@ -1,0 +1,111 @@
+# Figure 2 E, F: PIDC network ----
+new_Graph_list_added <- see github Objects/PIDC_object
+
+{
+  layout <- create_layout(new_Graph_list_added$ON24Casin_5perct_CasinPD, layout = "with_kk")
+  
+  layout$x[which(layout$name %in% c("Cst3"))] <- layout$x[which(layout$name %in% c("Cst3"))] - 0.5
+  layout$x[which(layout$name %in% c("Pebp1"))] <- layout$x[which(layout$name %in% c("Tma7"))] + 0.2
+  layout$x[which(layout$name %in% c("C1qtnf4"))] <- layout$x[which(layout$name %in% c("C1qtnf4"))] + 0.1
+  layout$x[which(layout$name %in% c("Myc"))] <- layout$x[which(layout$name %in% c("Timm10b"))] 
+  layout$x[which(layout$name %in% c("Cdk5"))] <- layout$x[which(layout$name %in% c("Ubb"))] 
+  layout$x[which(layout$name %in% c("Mapk1"))] <- layout$x[which(layout$name %in% c("Pebp1"))]
+  layout$x[which(layout$name %in% c("Entr1"))] <- layout$x[which(layout$name %in% c("Myc"))] + 0.5
+  layout$x[which(layout$name %in% c("Coro1a"))] <- layout$x[which(layout$name %in% c("Cdk5"))]
+  layout$x[which(layout$name %in% c("Stmn3"))] <- layout$x[which(layout$name %in% c("Mapk1"))] + 0.3
+  layout$x[which(layout$name %in% c("Egr4"))] <- layout$x[which(layout$name %in% c("Mapk1"))] 
+  layout$x[which(layout$name %in% c("Atp1a1"))] <- layout$x[which(layout$name %in% c("Actb"))]
+  layout$x[which(layout$name %in% c("Tmem259"))] <- layout$x[which(layout$name %in% c("Ndufc1"))]
+  layout$x[which(layout$name %in% c("Pdlim7"))] <- layout$x[which(layout$name %in% c("Ndufc1"))]
+  layout$x[which(layout$name %in% c("Pfdn5"))] <- layout$x[which(layout$name %in% c("C1qtnf4"))] + 0.5
+  layout$x[which(layout$name %in% c("Ndufa2"))] <- layout$x[which(layout$name %in% c("C1qtnf4"))] + 0.5
+  layout$x[which(layout$name %in% c("Arpc5l"))] <- layout$x[which(layout$name %in% c("Ar"))]
+  layout$x[which(layout$name %in% c("Lamp1"))] <- layout$x[which(layout$name %in% c("Ubc"))] + 0.5
+  layout$x[which(layout$name %in% c("Actb"))] <- layout$x[which(layout$name %in% c("Cdc42"))]
+  layout$x[which(layout$name %in% c("E2f4"))] <- layout$x[which(layout$name %in% c("Tuba1b"))]
+  layout$x[which(layout$name %in% c("Cbarp"))] <- layout$x[which(layout$name %in% c("Mapk1"))]
+  
+  layout$y[which(layout$name %in% c("Pebp1"))] <- layout$y[which(layout$name %in% c("Esr1"))] 
+  layout$y[which(layout$name %in% c("Cdk5","Mapk1","Myc"))] <- layout$y[which(layout$name %in% c("Pebp1"))] - 0.4
+  layout$y[which(layout$name %in% c("Coro1a","Egr4","Stmn3","Entr1"))] <- layout$y[which(layout$name %in% c("Pebp1"))] - 1.2
+  layout$y[which(layout$name %in% c("Lamp1"))] <- layout$y[which(layout$name %in% c("Ubc"))]
+  layout$y[which(layout$name %in% c("Actb"))] <- layout$y[which(layout$name %in% c("Entr1"))]
+  layout$y[which(layout$name %in% c("Entr1"))] <- layout$y[which(layout$name %in% c("E2f4"))]
+}
+
+print(ggraph(layout) + 
+        geom_edge_link(aes(start_cap = label_rect(node1.name),
+                           end_cap = label_rect(node2.name)), 
+                       arrow = arrow(type = "closed", length = unit(6, "mm"))) +
+        geom_node_label(aes(label = name, fill=gene_type), size = 7, repel = FALSE, alpha = 1) +
+        scale_fill_manual(values = c('Cdc42'='yellow', 'TF'='purple', 'Original'='royalblue1',
+                                     'Bridge' = "grey80", 'EGFR' = 'orange', 'p53'  = 'red',
+                                     'WNT' = 'green4', 'MAPK' = 'turquoise', 'PI3K' = 'pink'), name='Gene Type') +
+        theme_graph() + 
+        theme(text = element_text(family = "Times", size = 10), 
+              plot.title = element_text(family = "Times", size = 20)) + NoLegend())
+
+layout_casin <- layout
+
+{
+  layout <- create_layout(new_Graph_list_added$ON24_5perct_CasinPD, layout = "with_kk")
+  
+  sameGene <- intersect(layout$name, layout_casin$name)
+  idx_new <- match(sameGene, layout$name)  
+  idx_old <- match(sameGene, layout_casin$name)  
+  
+  # overwrite the new layout’s coords with the casin ones  
+  layout$x[idx_new] <- layout_casin$x[idx_old]  
+  layout$y[idx_new] <- layout_casin$y[idx_old]  
+  
+  layout$x[which(layout$name %in% c("Ndufa2"))] <- layout$x[which(layout$name %in% c("Tuba1b"))]
+  layout$x[which(layout$name %in% c("Tuba1b"))] <- layout$x[which(layout$name %in% c("Ndufc1"))]
+  
+  layout$y[which(layout$name %in% c("Ndufa2"))] <- layout$y[which(layout$name %in% c("Itm2b"))] 
+  
+}
+
+
+print(ggraph(layout) + 
+        geom_edge_link(aes(start_cap = label_rect(node1.name),
+                           end_cap = label_rect(node2.name)), 
+                       arrow = arrow(type = "closed", length = unit(6, "mm"))) +
+        geom_node_label(aes(label = name, fill=gene_type), size = 7, repel = FALSE, alpha = 1) +
+        scale_fill_manual(values = c('Cdc42'='yellow', 'TF'='purple', 'Original'='royalblue1',
+                                     'Bridge' = "grey80", 'EGFR' = 'orange', 'p53'  = 'red',
+                                     'WNT' = 'green4', 'MAPK' = 'turquoise', 'PI3K' = 'pink'), name='Gene Type') +
+        theme_graph() + 
+        theme(text = element_text(family = "Times", size = 10), 
+              plot.title = element_text(family = "Times", size = 20)) + NoLegend())
+
+{
+  layout <- create_layout(new_Graph_list_added$OFF24_5perct_CasinPD, layout = "with_kk")
+  
+  sameGene <- intersect(layout$name, layout_casin$name)
+  idx_new <- match(sameGene, layout$name)  
+  idx_old <- match(sameGene, layout_casin$name)  
+  
+  # overwrite the new layout’s coords with the casin ones  
+  layout$x[idx_new] <- layout_casin$x[idx_old]  
+  layout$y[idx_new] <- layout_casin$y[idx_old]  
+  
+  layout$x[which(layout$name %in% c("Eif1b"))] <- layout$x[which(layout$name %in% c("Ubc"))]
+  layout$x[which(layout$name %in% c("Cycs"))] <- layout$x[which(layout$name %in% c("Arf5"))]
+  layout$x[which(layout$name %in% c("Lamp1"))] <- layout$x[which(layout$name %in% c("Lamp1"))] + 0.3
+  
+  layout$y[which(layout$name %in% c("Lamp1"))] <- layout$y[which(layout$name %in% c("Eif1b"))] 
+  
+}
+
+
+print(ggraph(layout) + 
+        geom_edge_link(aes(start_cap = label_rect(node1.name),
+                           end_cap = label_rect(node2.name)), 
+                       arrow = arrow(type = "closed", length = unit(6, "mm"))) +
+        geom_node_label(aes(label = name, fill=gene_type), size = 7, repel = FALSE, alpha = 1) +
+        scale_fill_manual(values = c('Cdc42'='yellow', 'TF'='purple', 'Original'='royalblue1',
+                                     'Bridge' = "grey80", 'EGFR' = 'orange', 'p53'  = 'red',
+                                     'WNT' = 'green4', 'MAPK' = 'turquoise', 'PI3K' = 'pink'), name='Gene Type') +
+        theme_graph() + 
+        theme(text = element_text(family = "Times", size = 10), 
+              plot.title = element_text(family = "Times", size = 20)) + NoLegend())

@@ -1,0 +1,169 @@
+dds <- deseq object including every sample, pseudobulked
+
+dds_sub <- dds[,colData(dds)$lucitrt %in% c("synOFF24M_NoCasin","synON24M_NoCasin",
+                                            "synOFF24M_YesCasin", "synON24M_YesCasin")]
+
+dds_sub$lucitrt <- droplevels(dds_sub$lucitrt)
+dds_sub$bulk <- droplevels(dds_sub$bulk)
+dds_sub$age <- droplevels(dds_sub$age)
+dds_sub$lucitrt <- factor(dds_sub$lucitrt, levels = c("synOFF24M_NoCasin","synON24M_NoCasin",
+                                                      "synOFF24M_YesCasin", "synON24M_YesCasin"))
+
+cluster_rlog = assay(vst(dds_sub))[filter for rescued PD signature,]
+
+clusters <- degPatterns(cluster_rlog, metadata = as.data.frame(colData(dds_sub)), 
+                        time = "lucitrt", col=NULL, reduce = TRUE, plot = TRUE)
+clusters_Counts <- clusters$normalized
+
+clusters_counts2 <- clusters_Counts %>%
+  group_by(genes) %>%
+  arrange(lucitrt, .by_group = TRUE) %>%
+  # 2) Mark where we need a break:
+  mutate(
+    break_here = (lag(lucitrt) == "synON24M_NoCasin" & lucitrt == "synOFF24M_YesCasin"),
+    segment   = cumsum(replace_na(break_here, FALSE)) + 1
+  ) %>%
+  ungroup()
+
+# 3) Plot, grouping by both gene and segment:
+clusters_counts2$lucitrt <- factor(clusters_counts2$lucitrt, 
+                                   levels = c("synOFF24M_NoCasin","synON24M_NoCasin","synON24M_YesCasin","synOFF24M_YesCasin"))
+ggplot(clusters_counts2, 
+       aes(x = lucitrt,
+           y = value,
+           # interaction() makes each (gene, segment) its own group:
+           group = interaction(genes, segment))) +
+  
+  # boxplots per luci
+  geom_boxplot(aes(group = lucitrt, fill = lucitrt),
+               alpha = 1,
+               outlier.shape = NA) +
+  
+  # red lines broken at your specified transition
+  geom_line(position = position_jitter(width = 0.15),
+            alpha    = 0.3,
+            size     = 0.2,
+            color    = "darkgoldenrod2") +
+  # points on top
+  geom_point(position = position_jitter(width = 0.15),
+             size = 1.8, alpha = 0.6, color = "black") +
+  stat_summary(aes(group = lucitrt),fun = mean, fill = "white", 
+               geom = "point", shape = 23, size = 3,
+               show.legend = FALSE) +
+  scale_fill_manual(name = "condition", values = c("synOFF24M_NoCasin" = "red", "synON24M_NoCasin" = "red",
+                                                   "synOFF24M_YesCasin" = "blue", "synON24M_YesCasin" = "blue")) + 
+  theme_minimal(base_size = 14) +
+  labs(x     = "lucitrt",
+       y     = "value")
+
+### GO enrichment
+ON24M_YesCasin_allres <- differential results allres sheet (see zenodo)
+
+casinIntersect_patternGenes <- clusters$df$genes
+
+allres_genes <- ON24M_YesCasin_allres$gene
+sigres_genes <- casinIntersect_patternGenes
+
+allres_genes_entrez <- AnnotationDbi::select(org.Mm.eg.db, keys = allres_genes,
+                                             columns = c("ENTREZID"), keytype = "SYMBOL")
+sigres_genes_entrez <- AnnotationDbi::select(org.Mm.eg.db, keys = sigres_genes,
+                                             columns = c('ENTREZID'), keytype = 'SYMBOL')
+allres_genes_entrez <- allres_genes_entrez[!is.na(allres_genes_entrez$ENTREZID),]
+sigres_genes_entrez <- sigres_genes_entrez[!is.na(sigres_genes_entrez$ENTREZID),]
+
+for (ont in c("CC","BP","MF")){
+  label <- paste0("eGo",ont)
+  assign(label, enrichGO(gene = sigres_genes_entrez$ENTREZID, 
+                         universe = allres_genes_entrez$ENTREZID,
+                         keyType = "ENTREZID",
+                         OrgDb = org.Mm.eg.db, 
+                         ont = ont, minGSSize = 15,
+                         pAdjustMethod = "BH", 
+                         pvalueCutoff = 0.05,
+                         readable = TRUE)
+  )
+}
+df_list <- list("BP" = eGoBP, "CC" = eGoCC, "MF" = eGoMF)
+df_list_clustered <- list()
+for(o in c("BP","MF","CC")){
+  finalDF <- clusterGOsem(eGoRes = df_list[[o]],
+                          ont    = o,
+                          OrgDb  = org.Mm.eg.db,
+                          keytype= "SYMBOL",
+                          measure= "Wang",
+                          kRange = 2:10)
+  
+  df_list_clustered[[o]] <- finalDF
+}
+
+### KEGG pathfindR
+sigres <- ON24M_YesCasin_allres[which(ON24M_YesCasin_allres$gene %in% casinIntersect_patternGenes),]
+sigres_genes <- as.character(sigres$gene)
+gene_input <- as.data.frame(sigres[,c("gene","median_log2FoldChange","median_padj")])
+
+colnames(gene_input) <- c("Gene_symbol","logFC","FDR_p")
+
+result <- run_pathfindR(
+  input=gene_input,
+  convert2alias = FALSE,
+  gene_sets = "mmu_KEGG",
+  pin_name_path = "mmu_STRING",
+  output_dir = "",
+  adj_method = "BH", enrichment_threshold = 0.01,
+  p_val_threshold = 0.05,
+  plot_enrichment_chart = TRUE
+)
+
+result <- result %>%
+  dplyr::filter(!grepl("Addiction|Corona|Infection|Invasion|Cancer|Alcohol|Chagas disease|Cushing|Glioma|Melano|
+                Oocyte|Hepatitis|Tuberculosis|African|Viral|Carcinoma|Circadian|Cardiomyocytes|Leukemia|Infection", Term_Description, ignore.case = TRUE))
+
+finalDF <- clusterEnrichedPathfindR(
+  enrichRes = result,
+  kRange    = 2:10,       # try 2 through 8 clusters
+  method    = "average", # hierarchical agglomeration method
+  plotK     = TRUE       # plots silhouette vs k
+)
+
+### GO and KEGG visualization
+go_MF_clustered <- go_list_clustered$MF
+
+go_term_int <- c("structural constituent of cytoskeleton","proton transmembrane transporter activity",
+                 "molecular function inhibitor activity", "GTPase activity", "electron transfer activity")
+kegg_term_int <- c("Parkinson disease", "Ubiquitin mediated proteolysis", "Necroptosis",
+                   "Apoptosis","Nucleocytoplasmic transport")
+
+go_MF_int <- go_MF_clustered[which(go_MF_clustered$Description %in% go_term_int),]
+kegg_int <- kegg_clustered[which(kegg_clustered$Term_Description %in% kegg_term_int),]
+
+kegg2 <- kegg_int %>%
+  rename(Term = Term_Description,
+         Fold = Fold_Enrichment) %>%
+  mutate(Source = "KEGG")
+
+go2   <- go_MF_int %>%
+  rename(Term = Description,
+         Fold = FoldEnrichment) %>%
+  mutate(Source = "GO:MF")
+
+combined <- bind_rows(kegg2, go2)
+order_levels <- combined %>%
+  arrange(Source, Fold) %>%
+  pull(Term) %>%
+  unique()
+
+combined <- combined %>%
+  mutate(Term = factor(Term, levels = order_levels))
+
+ggplot(combined, aes(x = Fold,
+                     y = Term,
+                     fill = Source)) +
+  geom_col(position = position_dodge(width = 0.8)) +
+  labs(x    = "Fold Enrichment",
+       y    = "Term",
+       fill = "Data type") +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 10),
+    legend.position = "top"
+  )

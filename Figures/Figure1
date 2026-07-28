@@ -1,0 +1,411 @@
+seurat_integrated <- final seurat object # replace with actual seurat object
+
+# Figure 1 A ----
+DimPlot(seurat_integrated, reduction = "umap", label = FALSE, repel = TRUE, label.size = 6, raster = FALSE, 
+        cols = manColors_CellLevel0,
+        group.by = "CellLevel0")+guides(col=guide_legend(ncol =1,override.aes = list(size=4)))+ 
+  theme(legend.text = element_text(size = 15))
+
+DefaultAssay(seurat_integrated)
+Idents(seurat_integrated) <- "CellLevel1"
+seurat_integrated <- BuildClusterTree(seurat_integrated, dims = 1:30, reduction = "harmony", reorder = FALSE)
+dend <- Tool(seurat_integrated, slot ="BuildClusterTree")
+
+d1 <- ape::rotate(dend, 18)
+
+p <- ggtree::ggtree(d1, layout='circular') + 
+  ggtree::geom_tiplab(size = 6) +
+  ggtree::geom_tippoint() + ggtree::geom_tree(layout='circular') 
+
+p_nolabel <- ggtree::ggtree(d1, layout='circular') + 
+  #ggtree::geom_tiplab(size = 6) +
+  ggtree::geom_tippoint() + ggtree::geom_tree(layout='circular') 
+p
+p_nolabel
+
+## Heatmap
+data <- FetchData(seurat_integrated, vars = c("CellLevel1","sample", 
+                                              "Mbp","Acsbg1","Inpp5d","Pdgfra","Cped1","Ttr",
+                                              "Th","Slc17a6","Slc17a7","Gad1"), 
+                  slot = "data")
+## change group_by depending on which level we want
+data_aggregated_CellLevel1 <- data %>%
+  group_by(sample, CellLevel1) %>%
+  summarise(across(.cols = -c(0), # Skip the first two columns
+                   .fns = ~ mean(.x, na.rm = TRUE)),
+            .groups = 'drop') %>%
+  mutate(CellLevel1 = factor(CellLevel1, levels = c("Microglia","Astrocyte","Oligodendrocyte","OPC","Vascular Cell", "Choroid Plexus",
+                                                    "Dopaminergic Neuron", "GABA Neuron", "Vglut2 Neuron", "Vglut1 Neuron"))) %>%
+  arrange(CellLevel1)
+
+CellLevel1_annotation <- data_aggregated_CellLevel1$CellLevel1
+
+heatmap_matrix_CellLevel1 <- as.matrix(data_aggregated_CellLevel1[, -c(1:2)])
+heatmap_matrix_CellLevel1 <- apply(heatmap_matrix_CellLevel1, 2, normalize_and_scale)
+rownames(heatmap_matrix_CellLevel1) <- paste(data_aggregated_CellLevel1$sample, data_aggregated_CellLevel1$CellLevel1, sep = "_")
+
+# Create row annotation
+CellLevel1_ann <- HeatmapAnnotation(df = data.frame(CellLevel1 = CellLevel1_annotation),
+                                    which = "row", # Specify this is a row annotation
+                                    col = list(CellLevel1 = c("GABA Neuron" = "darkblue", "Vglut1 Neuron" = "darkred", "Vglut2 Neuron" = "palevioletred2",
+                                                              "Dopaminergic Neuron" = "blueviolet","Astrocyte" = "springgreen4",
+                                                              "Choroid Plexus" = "yellow3", "Microglia" = "plum3",
+                                                              "Oligodendrocyte" = "violetred2", "OPC" = "#F941D0", "Vascular Cell" = "tan2")), 
+                                    simple_anno_size = unit(0.5, "cm"),# Adjust the size as needed
+                                    border = TRUE,
+                                    show_legend = TRUE, show_annotation_name = FALSE) 
+
+
+desired_column_order_CL1 <- c("Inpp5d","Acsbg1","Mbp","Pdgfra","Cped1","Ttr",
+                              "Th","Gad1","Slc17a6","Slc17a7")
+heatmap_matrix_CellLevel1 <- heatmap_matrix_CellLevel1[, desired_column_order_CL1]
+breaks <- c(-4,-3,4)
+colors <- c("grey10","grey20","yellow")
+print(Heatmap(heatmap_matrix_CellLevel1,
+              name = "Expression",
+              row_names_gp = gpar(fontsize = 10),
+              column_names_gp = gpar(fontsize = 10),
+              show_row_names = FALSE,
+              show_column_names = TRUE,
+              show_row_dend = FALSE,
+              cluster_rows = FALSE,
+              cluster_columns = FALSE,
+              row_title = "Celltype",
+              use_raster = FALSE,
+              left_annotation = CellLevel1_ann,
+              col = colorRamp2(breaks, colors)) 
+)
+
+data <- FetchData(subset(seurat_integrated, CellLevel1 == "Vglut1 Neuron"), 
+                  vars = c("CellLevel2","sample","Bmpr1b","Cdh20",
+                           "Col19a1","Foxp2","Mndal","Npas3","Oprk1","Parm1","Prox1",
+                           "Reln","Rorb","Shc4","Sntb1","Spag16"), 
+                  slot = "data")
+## change group_by depending on which level we want
+data_aggregated_CellLevel2 <- data %>%
+  group_by(sample, CellLevel2) %>%
+  summarise(across(.cols = -c(0), # Skip the first two columns
+                   .fns = ~ mean(.x, na.rm = TRUE)),
+            .groups = 'drop') %>%
+  mutate(CellLevel2 = factor(CellLevel2, levels = c("Vglut1-Bmpr1b","Vglut1-Cdh20",
+                                                    "Vglut1-Col19a1","Vglut1-Foxp2","Vglut1-Mndal",
+                                                    "Vglut1-Npas3","Vglut1-Oprk1","Vglut1-Parm1",
+                                                    "Vglut1-Prox1","Vglut1-Reln","Vglut1-Rorb",
+                                                    "Vglut1-Shc4","Vglut1-Sntb1","Vglut1-Spag16"))) %>%
+  arrange(CellLevel2)
+
+CellLevel2_annotation <- data_aggregated_CellLevel2$CellLevel2
+
+heatmap_matrix_CellLevel2 <- as.matrix(data_aggregated_CellLevel2[, -c(1:2)])
+heatmap_matrix_CellLevel2 <- apply(heatmap_matrix_CellLevel2, 2, normalize_and_scale)
+rownames(heatmap_matrix_CellLevel2) <- paste(data_aggregated_CellLevel2$sample, data_aggregated_CellLevel2$CellLevel2, sep = "_")
+
+# Create row annotation
+CellLevel2_ann <- HeatmapAnnotation(df = data.frame(CellLevel2 = CellLevel2_annotation),
+                                    which = "row", # Specify this is a row annotation
+                                    col = list(CellLevel2 = c("Vglut1-Bmpr1b" = "indianred3","Vglut1-Cdh20" = "tomato", "Vglut1-Col19a1" = "orangered2",
+                                                              "Vglut1-Foxp2" = "salmon3", "Vglut1-Mndal" = "tomato4", "Vglut1-Npas3" = "orangered",
+                                                              "Vglut1-Oprk1" = "violetred4", "Vglut1-Parm1" = "tomato3", "Vglut1-Prox1" = "red2",
+                                                              "Vglut1-Reln" = "salmon", "Vglut1-Rorb" = "orangered3", "Vglut1-Shc4" = "red3",
+                                                              "Vglut1-Sntb1" = "firebrick","Vglut1-Spag16" = "indianred2")), 
+                                    simple_anno_size = unit(0.5, "cm"),# Adjust the size as needed
+                                    border = TRUE,
+                                    show_legend = TRUE, show_annotation_name = FALSE) 
+
+
+desired_column_order_CL2 <- c("Bmpr1b","Cdh20",
+                              "Col19a1","Foxp2","Mndal","Npas3","Oprk1","Parm1","Prox1",
+                              "Reln","Rorb","Shc4","Sntb1","Spag16")
+heatmap_matrix_CellLevel2 <- heatmap_matrix_CellLevel2[, desired_column_order_CL2]
+breaks <- c(-4,-3,4)
+colors <- c("grey10","grey20","yellow")
+print(Heatmap(heatmap_matrix_CellLevel2,
+              name = "Expression",
+              row_names_gp = gpar(fontsize = 10),
+              column_names_gp = gpar(fontsize = 10),
+              show_row_names = FALSE,
+              show_column_names = TRUE,
+              show_row_dend = FALSE,
+              cluster_rows = FALSE,
+              cluster_columns = FALSE,
+              row_title = "Celltype",
+              use_raster = FALSE,
+              left_annotation = CellLevel2_ann,
+              col = colorRamp2(breaks, colors)) 
+)
+
+data <- FetchData(subset(seurat_integrated, CellLevel1 == "Vglut2 Neuron"), 
+                  vars = c("CellLevel2","sample","Bnc2","Nova1","Pappa2","Sema3a","Sim1","Synpo2"), 
+                  slot = "data")
+## change group_by depending on which level we want
+data_aggregated_CellLevel2 <- data %>%
+  group_by(sample, CellLevel2) %>%
+  summarise(across(.cols = -c(0), # Skip the first two columns
+                   .fns = ~ mean(.x, na.rm = TRUE)),
+            .groups = 'drop') %>%
+  mutate(CellLevel2 = factor(CellLevel2, levels = c("Vglut2-Bnc2", "Vglut2-Nova1","Vglut2-Pappa2",
+                                                    "Vglut2-Sema3a", "Vglut2-Sim1","Vglut2-Synpo2"))) %>%
+  arrange(CellLevel2)
+
+CellLevel2_annotation <- data_aggregated_CellLevel2$CellLevel2
+
+heatmap_matrix_CellLevel2 <- as.matrix(data_aggregated_CellLevel2[, -c(1:2)])
+heatmap_matrix_CellLevel2 <- apply(heatmap_matrix_CellLevel2, 2, normalize_and_scale)
+rownames(heatmap_matrix_CellLevel2) <- paste(data_aggregated_CellLevel2$sample, data_aggregated_CellLevel2$CellLevel2, sep = "_")
+
+# Create row annotation
+CellLevel2_ann <- HeatmapAnnotation(df = data.frame(CellLevel2 = CellLevel2_annotation),
+                                    which = "row", # Specify this is a row annotation
+                                    col = list(CellLevel2 = c("Vglut2-Bnc2" = "palevioletred1", "Vglut2-Nova1" = "pink",
+                                                              "Vglut2-Pappa2" = "pink2", "Vglut2-Sema3a" = "palevioletred3",
+                                                              "Vglut2-Sim1" = "plum1", "Vglut2-Synpo2" = "plum3")), 
+                                    simple_anno_size = unit(0.5, "cm"),# Adjust the size as needed
+                                    border = TRUE,
+                                    show_legend = TRUE, show_annotation_name = FALSE) 
+
+
+desired_column_order_CL2 <- c("Bnc2","Nova1","Pappa2","Sema3a","Sim1","Synpo2")
+heatmap_matrix_CellLevel2 <- heatmap_matrix_CellLevel2[, desired_column_order_CL2]
+breaks <- c(-4,-3,4)
+colors <- c("grey10","grey20","yellow")
+print(Heatmap(heatmap_matrix_CellLevel2,
+              name = "Expression",
+              row_names_gp = gpar(fontsize = 10),
+              column_names_gp = gpar(fontsize = 10),
+              show_row_names = FALSE,
+              show_column_names = TRUE,
+              show_row_dend = FALSE,
+              cluster_rows = FALSE,
+              cluster_columns = FALSE,
+              row_title = "Celltype",
+              use_raster = FALSE,
+              left_annotation = CellLevel2_ann,
+              col = colorRamp2(breaks, colors)) 
+)
+
+data <- FetchData(subset(seurat_integrated, CellLevel1 == "GABA Neuron"), 
+                  vars = c("CellLevel2","sample","Ano1","Cemip","Chst9","Etv1","Frem1",
+                           "Lamp5","Otx2","Rgs9","Rmst","Six3","Sst","Vcan","Vip"), 
+                  slot = "data")
+## change group_by depending on which level we want
+data_aggregated_CellLevel2 <- data %>%
+  group_by(sample, CellLevel2) %>%
+  summarise(across(.cols = -c(0), # Skip the first two columns
+                   .fns = ~ mean(.x, na.rm = TRUE)),
+            .groups = 'drop') %>%
+  mutate(CellLevel2 = factor(CellLevel2, levels = c("GABA-Ano1-Ano2","GABA-Cemip","GABA-Chst9",
+                                                    "GABA-Etv1","GABA-Frem1","GABA-Lamp5","GABA-Otx2",
+                                                    "GABA-Rgs9","GABA-Rmst-Tshz2","GABA-Six3","GABA-Sst",
+                                                    "GABA-Vcan","GABA-Vip"))) %>%
+  arrange(CellLevel2)
+
+CellLevel2_annotation <- data_aggregated_CellLevel2$CellLevel2
+
+heatmap_matrix_CellLevel2 <- as.matrix(data_aggregated_CellLevel2[, -c(1:2)])
+heatmap_matrix_CellLevel2 <- apply(heatmap_matrix_CellLevel2, 2, normalize_and_scale)
+rownames(heatmap_matrix_CellLevel2) <- paste(data_aggregated_CellLevel2$sample, data_aggregated_CellLevel2$CellLevel2, sep = "_")
+
+# Create row annotation
+CellLevel2_ann <- HeatmapAnnotation(df = data.frame(CellLevel2 = CellLevel2_annotation),
+                                    which = "row", # Specify this is a row annotation
+                                    col = list(CellLevel2 = c("GABA-Ano1-Ano2" = "dodgerblue3", "GABA-Cemip" = "deepskyblue3", "GABA-Chst9" = "dodgerblue4",
+                                                              "GABA-Etv1" = "deepskyblue2", "GABA-Frem1" = "darkslategray3", "GABA-Lamp5" = "cyan3",
+                                                              "GABA-Otx2" = "dodgerblue1", "GABA-Rgs9" = "blue", "GABA-Rmst-Tshz2" = "darkslategray4",
+                                                              "GABA-Six3" = "dodgerblue2", "GABA-Sst" = "dodgerblue1", "GABA-Vcan" = "cyan4","GABA-Vip" = "deepskyblue1"
+                                    )), 
+                                    simple_anno_size = unit(0.5, "cm"),# Adjust the size as needed
+                                    border = TRUE,
+                                    show_legend = TRUE, show_annotation_name = FALSE) 
+
+
+desired_column_order_CL2 <- c("Ano1","Cemip","Chst9","Etv1","Frem1",
+                              "Lamp5","Otx2","Rgs9","Rmst","Six3","Sst","Vcan","Vip")
+heatmap_matrix_CellLevel2 <- heatmap_matrix_CellLevel2[, desired_column_order_CL2]
+breaks <- c(-4,-3,4)
+colors <- c("grey10","grey20","yellow")
+print(Heatmap(heatmap_matrix_CellLevel2,
+              name = "Expression",
+              row_names_gp = gpar(fontsize = 10),
+              column_names_gp = gpar(fontsize = 10),
+              show_row_names = FALSE,
+              show_column_names = TRUE,
+              show_row_dend = FALSE,
+              cluster_rows = FALSE,
+              cluster_columns = FALSE,
+              row_title = "Celltype",
+              use_raster = FALSE,
+              left_annotation = CellLevel2_ann,
+              col = colorRamp2(breaks, colors)) 
+)
+
+
+# Figure 1 B ----
+metadata <- seurat_integrated@meta.data
+
+table(metadata$condition)
+
+metadata$condition <- factor(metadata$condition, 
+                             levels = c("synOFF6M_NoCasin", "synOFF16M_NoCasin","synOFF24M_NoCasin",
+                                        "synOFF6M_YesCasin", "synOFF16M_YesCasin","synOFF24M_YesCasin",
+                                        "synON6M_NoCasin", "synON16M_NoCasin","synON24M_NoCasin",
+                                        "synON6M_YesCasin", "synON16M_YesCasin","synON24M_YesCasin"))
+
+print(ggplot(metadata, aes(x = condition, fill = CellLevel1)) +
+  geom_bar() +
+  scale_y_log10() +
+  scale_fill_manual(name = "Annotation", values = manColors_CellLevel1) + 
+  labs(
+    x    = "Condition",
+    y    = "Count",
+    fill = "CellLevel1"
+  ) +
+  theme_minimal())
+
+print(ggplot(metadata, aes(x = condition, fill = CellLevel2)) +
+  geom_bar() +
+  scale_y_log10() +
+  scale_fill_manual(name = "Annotation", values = manColors_CellLevel2) + 
+  labs(
+    x    = "Condition",
+    y    = "Count",
+    fill = "CellLevel2"
+  ) +
+  theme_minimal())
+
+print(ggplot(metadata, aes(x = condition, fill = CellLevel2)) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(
+    labels = percent_format(), 
+    expand = expansion(mult = c(0, 0.02))
+  ) +
+  scale_fill_manual(name = "Annotation", values = manColors_CellLevel2) + 
+  labs(
+    x    = "Condition",
+    y    = "Proportion",
+    fill = "CellLevel2"
+  ) +
+  theme_minimal())
+
+print(ggplot(metadata, aes(x = condition, fill = CellLevel1)) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(
+    labels = percent_format(), 
+    expand = expansion(mult = c(0, 0.02))
+  ) +
+  scale_fill_manual(name = "Annotation", values = manColors_CellLevel1) + 
+  labs(
+    x    = "Condition",
+    y    = "Proportion",
+    fill = "CellLevel1"
+  ) +
+  theme_minimal())
+
+# Figure 1 D ----
+effect_df_int <- info_df # Additional Data 5 filtered for PD signature comparisons only
+effect_df_int_sub <- effect_df_int[-which(effect_df_int$celltype %in% c("Vglut1 Neuron","GABA Neuron", "Vglut2 Neuron")),]
+effect_df_int_sub$EffectSize <- effect_df_int_sub$nSig/effect_df_int_sub$predicted_nSig
+print(ggplot(effect_df_int_sub[which(effect_df_int_sub$geneSet == "casin24_intersect"),], 
+       aes(x = nUMI, y = nSig, col = celltype, size = EffectSize)) +
+  geom_point() +  # Plot the data points
+  geom_smooth(method = "lm", col = "red") +  # Add the linear regression line
+  geom_text_repel(aes(label = celltype)) +  # Add labels
+  labs(x = "Sum nUMI", y = "Number of differentially expressed genes", 
+       title = "Comparing number of significant hits to nUMI") +
+  scale_color_manual(values = manColors_CellLevel2, name = "Celltype") + 
+  scale_size_continuous(
+    range = c(1, 15)        # this forces the smallest EffectSize to map to size=1, the largest to size=12
+  ) +
+  theme_classic() + # Use a minimal theme for a cleaner look
+  theme(plot.title = element_text(size = 25, face = "bold"),
+        axis.title = element_text(size = 15),
+        legend.position = "none"))
+
+plot_df <- # filtered only for PD signature and rescued PD signature
+plot_df <- plot_df[-which(plot_df$celltype %in% c("Vglut1 Neuron","GABA Neuron", "Vglut2 Neuron")),]
+colnames(plot_df)
+
+
+order_levels <- plot_df %>%
+  dplyr::filter(geneSet == "ON24M_noCasin") %>%
+  arrange(desc(nSig)) %>%
+  pull(celltype)
+
+plot_df %>%
+  mutate(celltype = factor(celltype, levels = order_levels)) %>%
+  ggplot(aes(x = celltype, y = nSig, color = geneSet,linetype = geneSet, group = geneSet)) +
+  geom_point(size = 4) +
+  geom_line(linewidth = 1.5) +
+  scale_color_manual(values = c(
+    "casin24_intersect" = "darkgreen",
+    "ON24M_noCasin"     = "darkorchid4"
+  )) +
+  scale_linetype_manual(values = c(
+    "casin24_intersect" = "solid",
+    "ON24M_noCasin"     = "dashed"
+  )) +
+  theme_bw() +
+  labs(x = "Cell type", y = "nSig", color = "geneSet")
+
+order_levels <- plot_df %>%
+  dplyr::filter(geneSet == "ON24M_noCasin") %>%
+  arrange(nSig) %>%
+  pull(celltype)
+
+plot_df %>%
+  mutate(celltype = factor(celltype, levels = order_levels)) %>%
+  ggplot(aes(x = celltype, y = nSig, color = geneSet,linetype = geneSet, group = geneSet)) +
+  geom_point(size = 4) +
+  geom_line(linewidth = 1.5) +
+  scale_color_manual(values = c(
+    "casin24_intersect" = "darkgreen",
+    "ON24M_noCasin"     = "darkorchid4"
+  )) +
+  scale_linetype_manual(values = c(
+    "casin24_intersect" = "solid",
+    "ON24M_noCasin"     = "dashed"
+  )) +
+  theme_bw() +
+  labs(x = "Cell type", y = "nSig", color = "geneSet")
+
+order_levels <- plot_df %>%
+  dplyr::filter(geneSet == "casin24_intersect") %>%
+  arrange(desc(nSig)) %>%
+  pull(celltype)
+
+plot_df %>%
+  mutate(celltype = factor(celltype, levels = order_levels)) %>%
+  ggplot(aes(x = celltype, y = nSig, color = geneSet, linetype = geneSet, group = geneSet)) +
+  geom_point(size = 4) +
+  geom_line(linewidth = 1.5) +
+  scale_color_manual(values = c(
+    "casin24_intersect" = "darkgreen",
+    "ON24M_noCasin"     = "darkorchid4"
+  )) +
+  scale_linetype_manual(values = c(
+    "casin24_intersect" = "solid",
+    "ON24M_noCasin"     = "dashed"
+  )) +
+  theme_bw() +
+  labs(x = "Cell type", y = "nSig", color = "geneSet")
+
+order_levels <- plot_df %>%
+  dplyr::filter(geneSet == "casin24_intersect") %>%
+  arrange(nSig) %>%
+  pull(celltype)
+
+plot_df %>%
+  mutate(celltype = factor(celltype, levels = order_levels)) %>%
+  ggplot(aes(x = celltype, y = nSig, color = geneSet, linetype = geneSet, group = geneSet)) +
+  geom_point(size = 4) +
+  geom_line(linewidth = 1.5) +
+  scale_color_manual(values = c(
+    "casin24_intersect" = "darkgreen",
+    "ON24M_noCasin"     = "darkorchid4"
+  )) +
+  scale_linetype_manual(values = c(
+    "casin24_intersect" = "solid",
+    "ON24M_noCasin"     = "dashed"
+  )) +
+  theme_bw() +
+  labs(x = "Cell type", y = "nSig", color = "geneSet")
+
